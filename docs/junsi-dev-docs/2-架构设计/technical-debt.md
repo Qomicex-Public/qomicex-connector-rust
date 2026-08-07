@@ -64,11 +64,12 @@
 - `https://nodes.qomicex.top/api/nodes` 在部分网络不可达；失败正确回退内置默认节点（etnode.zkitefly.eu.org node1/node2），但本机测试时默认节点也解析失败 → 无中继可用。
 - **验证**：需在可访问该服务或自有中继的真实网络下验证「在线获取 → 排序 → 回退」全链路。
 
-### 3.2 easytier features 精简集 — ✅ 已扩展（2026-08-07）
-- 已启用：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, kcp, quic, faketcp`（easytier-core 同步 `proxy-packet`；easytier-proto 同步 `quic, faketcp`）。
-- udp 为 easytier 基础协议，无需 feature。
+### 3.2 easytier features 精简集 — ✅ 已扩展至官方默认（2026-08-07）
+- 已启用：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, socks5, kcp, quic, faketcp, websocket, wireguard, upnp`（easytier-core 同步 `proxy-packet, vpn-portal`；easytier-proto 同步 `quic, faketcp, websocket, wireguard`）。
+- **覆盖官方公共节点全部协议端口**：tcp/udp 11010、wss 11011/11012、wg 11013 —— 原版 ET 中继节点可正常连接。
+- **`socks5` 必须保留**：`gateway_enabled = cfg!(feature = "socks5")`，缺失时 `port_forward_adapter` 不启动 → 端口转发模式 10061 拒绝连接。
 - **注意**：启用 faketcp 后 Windows 链接需要 `Packet.lib`（easytier build.rs 输出相对 LIBPATH `easytier/third_party/x86_64/`，按 rustc CWD=workspace 根解析）→ 已把 Packet.lib/Packet.dll 放入工作区根 `easytier/third_party/x86_64/`（勿删）。
-- 若仍需 wireguard/websocket/magic-dns：追加对应 feature（编译成本递增）。
+- 未启用（可追加）：magic-dns（域名解析）、icmp-proxy（ping 代理）——均与中继节点互通无关。
 
 ### 3.3 P2P 打洞/中继数据面未真实验证 — P1（部分验证）
 - 本机已验证：控制面（开房/加入/发现/协商/路由同步）全通、**端口转发数据面全链路**（集成测试 `tests/e2e_direct.rs`，`#[ignore]` 手动触发，验证：发现中心 → 端口转发连接 → 协商 → player_ping → ping → server_port → 玩家列表 → 255）。

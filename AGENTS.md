@@ -72,6 +72,6 @@ let center = client.create_room(/* ... */, ct.clone(), vec![proto]).await?;
 ## 依赖与配置要点
 
 - easytier / easytier-core / easytier-proto：git 依赖 `ssh://git@github.com/Qomicex-Public/EasyTier4QML.git`，锁定 `rev = "287c667"`
-- easytier features：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, kcp, quic, faketcp`
+- easytier features：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, socks5, kcp, quic, faketcp, websocket, wireguard, upnp`（覆盖官方公共节点全部协议端口：tcp/udp 11010、wss 11011/11012、wg 11013；`socks5` 必须保留——`gateway_enabled` 依赖它，否则端口转发模式不可用）
 - **faketcp 链接依赖**：easytier build.rs 以相对路径 `easytier/third_party/x86_64/` 搜索 `Packet.lib`（按 rustc CWD=workspace 根解析）→ 已复制到工作区根 `easytier/third_party/x86_64/`，删除会导致 `LNK1181: Packet.lib` 链接失败
 - 数据库/服务端：无
