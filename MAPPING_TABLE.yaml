@@ -56,8 +56,11 @@ EasyTier 库：`C:\Users\tmoam\AppData\Local\Temp\opencode\easytier4qml`（git �
 - 未知协议 → status 255 + UTF8 "未知协议: {key}"
 - 事件：C# event → Rust 用 tokio::sync::watch / broadcast（PlayersChanged、ConnectionLost、ClientDisconnected）
 
-## 待定（实现时确认后回填）
-- T1: TomlConfig 各 setter 精确签名（set_network_identity/set_ipv4/set_listeners/set_peers/set_port_forwards/set_tcp_whitelist/set_udp_whitelist/set_flags/set_hostname/set_dhcp/set_inst_name）
-- T2: flags 结构字段名（no_tun/use_smoltcp/data_compress_algo/multi_thread/latency_first/enable_kcp_proxy）
-- T3: Route 类型字段（peer_id/hostname/ipv4_addr 类型，Ipv4Inet→地址提取）
-- T4: network_info vs route_snapshots 选择（倾向 route_snapshots）
+## 待定（已由 spike 验证，2026-08-07 回填）
+- T1: TomlConfig setters 为 ConfigLoader trait 方法（需 use easytier_core::config::toml::ConfigLoader）：set_network_identity(NetworkIdentity::new(name,secret)) / set_hostname(Some) / set_ipv4(Some("10.144.144.1/24".parse())) / set_dhcp / set_listeners(Vec<Url>) / set_peers(Vec<PeerConfig{uri,peer_public_key}>) / set_port_forwards(Vec<PortForwardConfig{bind_addr,dst_addr,proto}>) / set_tcp_whitelist/set_udp_whitelist(Vec<String>) / set_flags(Flags) / set_inst_name / dump()
+- T2: Flags 字段：no_tun, use_smoltcp, data_compress_algo(CompressionAlgoPb::Zstd.into()), multi_thread, latency_first, enable_kcp_proxy
+- T3: instance.node_snapshot() → NodeSnapshot{peer_id: u32, ipv4_addr: Option<cidr::Ipv4Inet>, hostname}；instance.route_snapshots() → Vec<easytier_proto::core_peer::peer::Route>{peer_id, hostname, ipv4_addr: Option<Ipv4Inet>}（通过 easytier 的 proto re-export 命名）
+- T4: 用 route_snapshots() 取节点列表；instance.peer_id() 取 NodeId
+- T5: 生命周期：easytier::instance::factory::native_instance_manager() → Arc<InstanceManager<NativeInstanceFactory>>；manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG) → Uuid；instance.state()/is_ready() 轮询 ≤30s + 2s 缓冲；manager.delete_network_instances([id])
+- T6: 需要 easytier-core 作为直接依赖（命名 InstanceManager/TomlConfig 类型）；easytier-core features 用 proxy-smoltcp-stack（非 smoltcp 别名）；.cargo/config.toml 含 git-fetch-with-cli + PROTOC + VC_LTL + YY_THUNKS 环境变量
+- T7: util::CancellationToken（自实现，基于 Arc<AtomicBool>+Notify），heartbeat 使用

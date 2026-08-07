@@ -52,3 +52,59 @@
 - `ILogger<T>` 结构化日志参数（Rust 用 log crate 文本日志替代）
 - `_client.Connected` 实时 socket 状态检测（见偏差 4）
 - `CenterConnectionException` 独立类型（并入 `ScaffoldingError::CenterConnection`）
+
+# 移植日志：访客端联机客户端（ScaffoldingGuest）
+
+## 来源与目标
+
+| 源文件（C#） | 目标文件（Rust） |
+| --- | --- |
+| `Qomicex.Connector/Guest/ScaffoldingGuest.cs` | `src/guest/scaffolding_guest.rs` |
+| — | `src/guest/mod.rs`（追加 `pub mod scaffolding_guest;`） |
+
+## 新增依赖
+
+无。`tokio`（sync / time / net）、`serde`、`serde_json`、`log` 均为 crate 既有依赖。
+
+## 映射说明（一一对应）
+
+| C# | Rust | 说明 |
+| --- | --- | --- |
+| 构造函数注入 EasyTierManager / TcpClient / CenterDiscoveryService | `new(player_name, machine_id, vendor, custom_protocol_keys, relay_nodes)` | 内部创建 `Arc<Mutex<...>>` 包装的 EasyTierManager / TcpClient；发现逻辑直接用 `core::center_discovery::discover` |
+| `event Action? ConnectionLost` | `connection_lost_tx: watch::Sender<bool>` + `connection_lost_rx()` | watch channel 订阅替代事件 |
+| `NegotiatedProtocols` 属性 | `negotiated_protocols()` → `RwLock` 读 clone | async |
+| `MinecraftHost / MinecraftPort` 属性 | `minecraft_host()` / `minecraft_port()` | async getter |
+| `ConnectAsync(code, ct)` | `connect(&self, code, ct)` | 建 config → start EasyTier → discover → 直连或转发重启 → 心跳；见决策 1 |
+| `TryConnectOnceAsync` | `try_connect_once` | 超时包 connect，ping/协商串行在外；见决策 2 |
+| `TryConnectWithRetryAsync` | `try_connect_with_retry` | 10 次 × 3s 超时，间隔 2s |
+| `SendPlayerPing(ct)` | `send_player_ping` | 未连接 → 发送 `true`；协商含 `c:player_easytier_id` 才填 easytier_id；锁逐一获取（tcp → negotiated → easy_tier → tcp），见决策 3 |
+| `NegotiateProtocols(ct)` | `negotiate_protocols` | 标准 6 协议 + 自定义，`\0` 连接；成功才写 `negotiated` |
+| `PingAsync` | `ping` | body `[0x42]`，返回 `is_success()` |
+| `GetServerPortAsync` | `get_server_port` | 32..64 → "MC 服务器未启动"；非成功 → 失败；body 2 字节大端 → u16；长度非法补 Protocol 错误（C# 会抛 ArgumentException） |
+| `MapMinecraftPortAsync` | `map_minecraft_port` | 直连模式直接缓存返回；转发模式停心跳 → 断开 → 停 EasyTier → 追加 MC 转发 → 重连 → 重启心跳；见决策 4 |
+| `GetPlayerListAsync` | `get_player_list` | `serde_json::Value` 数组解析；`kind == "HOST"` → Host，否则 Guest |
+| `SendAsync(request, ct)` | `send_raw` | 透传 tcp.send |
+| `SendAsync<TResp>(key, ct)` | `send_json` | split_key 拆 ns/type；空 body；非成功 → Protocol 错误；JSON 反序列化 |
+| `SendAsync<TReq, TResp>(key, payload, ct)` | `send_json_req` | 同上，body = JSON 序列化 payload |
+| `LeaveAsync(ct)` | `leave` | 停心跳 → 断开 → 停 EasyTier |
+| `StartAsync(ct)` 心跳 | `start_heartbeat` | HeartbeatService 回调不调用 self 方法，全部克隆 Arc，避免锁重入；见决策 5 |
+| `SplitKey` | `split_key` | 私有函数；无 `:` → Protocol 错误 |
+| `ParseLocalPortFromForward` | `parse_local_port_from_forward` | 取 `://` 后首个 `/` 前最后 `:` 后数字 |
+| `FindFreeLocalPort()` | `find_free_local_port` | `TcpListener::bind("127.0.0.1:0")` 取端口后立即 drop |
+
+## 偏差 / 决策记录
+
+1. **EasyTier 重启（ConnectAsync 转发分支）锁顺序**：先 `easy_tier.stop()`（块内释放），再改 `config.port_forwards`（块内释放），最后克隆 config 并 `start`。全程一次只持一个锁，杜绝锁重入死锁。
+2. **TryConnectOnceAsync 死锁规避**：C# 在同一方法内连续 Connect → SendPlayerPing → NegotiateProtocols；Rust 版将 `tcp.lock().await.connect(...)` 整体放入 `tokio::time::timeout`（守卫随语句结束释放），ping / 协商在闭包外串行调用，每次各自短暂持锁。
+3. **SendPlayerPing 锁顺序**：先查 `tcp.is_connected()`（锁即释放）→ 读 `negotiated`（释放）→ 取 `easy_tier.node_id()`（释放）→ 最后 `tcp.send`。禁止同时持有两个锁。
+4. **heartbeat_ct 字段**：新增 `tokio::sync::Mutex<Option<CancellationToken>>` 记录心跳取消令牌；`stop_heartbeat()` 取出并 cancel，替代 C# `_heartbeatService?.Dispose()`。
+5. **心跳回调无 self 调用**：回调闭包内全部使用 `start_heartbeat` 时克隆的 `Arc<Mutex<...>>` + `watch::Sender` + String，与 `send_player_ping` 逻辑一致但独立实现（防重入）。
+6. **`connection_lost` 触发语义**：C# 用 `_connectionLostFired` 防重复触发；Rust 用 `watch::Sender::send(true)`（重复 send 幂等，值不变不唤醒），行为等价且更简单。
+7. **心跳 body 构造**：用 `serde_json::json!` 直接构造（`easytier_id` 为 null 或字符串，`kind` 为 null），与 C# `PlayerProfileEntry` 序列化结果一致（System.Text.Json 默认序列化 null）。
+8. **`GetServerPortAsync` 长度非法分支**：C# `ReadUInt16BigEndian` 对非 2 字节抛异常；Rust 补 `Protocol("服务器端口响应长度非法")` 错误。
+
+## 未覆盖（UNMAPPED 汇总）
+
+- C# `Dispose()`（Rust 无生命周期资源需手动释放，Arcs 随结构体 drop 自动回收）
+- `ILogger<T>` 结构化日志参数（Rust 用 log crate 文本日志替代）
+- 取消参数逐方法透传（统一由调用方传 `CancellationToken`，connect/retry 内检查 `is_cancelled`）

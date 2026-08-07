@@ -18,6 +18,8 @@ regex = "1"
 log = "0.4"
 thiserror = "2"
 rand = { version = "0.8", features = ["std_rng"] }
+uuid = { version = "1", features = ["v4"] }
+cidr = { version = "0.3.1", features = ["serde"] }
 sys-locale = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier", default-features = false, features = [
@@ -29,3 +31,13 @@ easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", packa
     "zstd",
     "smoltcp",
 ] }
+easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier-core", default-features = false, features = [
+    "aes-gcm",
+    "endpoint-discovery",
+    "extended-services",
+    "management",
+    "tcp-hole-punch",
+    "zstd",
+    "proxy-smoltcp-stack",
+] }
+easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier-proto", default-features = false, features = ["api", "core"] }

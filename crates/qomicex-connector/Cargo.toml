@@ -15,9 +15,13 @@ regex.workspace = true
 log.workspace = true
 thiserror.workspace = true
 rand.workspace = true
+uuid.workspace = true
+cidr.workspace = true
 sys-locale.workspace = true
 reqwest.workspace = true
 easytier.workspace = true
+easytier-core.workspace = true
+easytier-proto.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
