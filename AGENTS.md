@@ -71,6 +71,7 @@ let center = client.create_room(/* ... */, ct.clone(), vec![proto]).await?;
 
 ## 依赖与配置要点
 
-- easytier / easytier-core / easytier-proto：git 依赖 `ssh://git@github.com/Qomicex-Public/EasyTier4QML.git`
-- easytier features（精简集）：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp`
+- easytier / easytier-core / easytier-proto：git 依赖 `ssh://git@github.com/Qomicex-Public/EasyTier4QML.git`，锁定 `rev = "287c667"`
+- easytier features：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, kcp, quic, faketcp`
+- **faketcp 链接依赖**：easytier build.rs 以相对路径 `easytier/third_party/x86_64/` 搜索 `Packet.lib`（按 rustc CWD=workspace 根解析）→ 已复制到工作区根 `easytier/third_party/x86_64/`，删除会导致 `LNK1181: Packet.lib` 链接失败
 - 数据库/服务端：无

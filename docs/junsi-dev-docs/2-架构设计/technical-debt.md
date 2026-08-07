@@ -65,11 +65,11 @@
 - `https://nodes.qomicex.top/api/nodes` 在部分网络不可达；失败正确回退内置默认节点（etnode.zkitefly.eu.org node1/node2），但本机测试时默认节点也解析失败 → 无中继可用。
 - **验证**：需在可访问该服务或自有中继的真实网络下验证「在线获取 → 排序 → 回退」全链路。
 
-### 3.2 easytier features 精简集 — P1
-- 当前 features：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp`。
-- **未启用**：kcp / quic / wireguard / faketcp / magic-dns / upnp / websocket。
-- **风险**：若公共中继仅暴露 wss/kcp/quic 端口，客户端无法连接；`enable_kcp_proxy=true` flag 在无 kcp feature 时无效。
-- **修复**：按中继实际支持协议追加 features（编译时间成本：quic/kcp 较重）。
+### 3.2 easytier features 精简集 — ✅ 已扩展（2026-08-07）
+- 已启用：`aes-gcm, endpoint-discovery, extended-services, management, tcp-hole-punch, zstd, smoltcp, kcp, quic, faketcp`（easytier-core 同步 `proxy-packet`；easytier-proto 同步 `quic, faketcp`）。
+- udp 为 easytier 基础协议，无需 feature。
+- **注意**：启用 faketcp 后 Windows 链接需要 `Packet.lib`（easytier build.rs 输出相对 LIBPATH `easytier/third_party/x86_64/`，按 rustc CWD=workspace 根解析）→ 已把 Packet.lib/Packet.dll 放入工作区根 `easytier/third_party/x86_64/`（勿删）。
+- 若仍需 wireguard/websocket/magic-dns：追加对应 feature（编译成本递增）。
 
 ### 3.3 P2P 打洞/中继数据面未真实验证 — P1
 - 本机已验证：控制面（开房/加入/发现/协商/路由同步）全通、直连拓扑数据面 echo 通过、SCF 全协议链路（TcpServer↔TcpClient）通过。

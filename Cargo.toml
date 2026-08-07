@@ -31,6 +31,9 @@ easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev =
     "tcp-hole-punch",
     "zstd",
     "smoltcp",
+    "kcp",
+    "quic",
+    "faketcp",
 ] }
 easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier-core", default-features = false, features = [
     "aes-gcm",
@@ -40,5 +43,6 @@ easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", 
     "tcp-hole-punch",
     "zstd",
     "proxy-smoltcp-stack",
+    "proxy-packet",
 ] }
-easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier-proto", default-features = false, features = ["api", "core"] }
+easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier-proto", default-features = false, features = ["api", "core", "quic", "faketcp"] }
