@@ -42,6 +42,8 @@ pub struct ScaffoldingCenter {
     /// 玩家列表变更通知发送端（对应 C# `PlayersChanged` 事件）。
     players_changed_tx: tokio::sync::watch::Sender<Vec<PlayerInfo>>,
     relay_nodes: Option<Vec<String>>,
+    /// 自定义扩展协议（对应 C# `_customProtocols`，参与广告与协商）。
+    custom_protocols: Vec<Arc<dyn ProtocolHandler>>,
     /// 扫描选中的 TCP 端口（支撑同步 `tcp_port()`）。
     tcp_port: AtomicU16,
     /// 服务器任务取消令牌（供 `close()` 停止 accept 循环）。
@@ -57,6 +59,7 @@ impl ScaffoldingCenter {
         vendor: String,
         minecraft_port: u16,
         relay_nodes: Option<Vec<String>>,
+        custom_protocols: Vec<Arc<dyn ProtocolHandler>>,
     ) -> Self {
         let (players_changed_tx, _) = tokio::sync::watch::channel(Vec::<PlayerInfo>::new());
         Self {
@@ -70,6 +73,7 @@ impl ScaffoldingCenter {
             tcp_server: Arc::new(tokio::sync::Mutex::new(None)),
             players_changed_tx,
             relay_nodes,
+            custom_protocols,
             tcp_port: AtomicU16::new(0),
             server_ct: tokio::sync::Mutex::new(None),
         }
@@ -111,25 +115,28 @@ impl ScaffoldingCenter {
         }
         self.tcp_port.store(tcp_port, Ordering::Relaxed);
 
-        let advertised_keys: Vec<String> = ["c:ping", "c:protocols", "c:server_port", "c:player_ping", "c:player_profiles_list", "c:player_easytier_id"]
+        // 广告协议键 = 标准 6 键 + 自定义协议键（对应 C# `advertisedKeys.AddRange(...)`）
+        let mut advertised_keys: Vec<String> = ["c:ping", "c:protocols", "c:server_port", "c:player_ping", "c:player_profiles_list", "c:player_easytier_id"]
             .into_iter()
             .map(String::from)
             .collect();
+        advertised_keys.extend(self.custom_protocols.iter().map(|p| p.key().to_string()));
 
         // 断开事件通道（对齐 tcp_server 约定：空串映射回 None）
         let (disconnected_tx, mut disconnected_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-        // 构建协议列表（对应 C# `new PlayerPingProtocol(OnPlayerPing)` 等）
+        // 构建协议列表（对应 C# `new PlayerPingProtocol(OnPlayerPing)` 等 + `protocols.AddRange(_customProtocols)`）
         let players_ping = self.players.clone();
         let players_list = self.players.clone();
         let tx = self.players_changed_tx.clone();
-        let protocols: Vec<Arc<dyn ProtocolHandler>> = vec![
+        let mut protocols: Vec<Arc<dyn ProtocolHandler>> = vec![
             Arc::new(PingProtocol),
             Arc::new(ProtocolsProtocol::new(advertised_keys)),
             Arc::new(ServerPortProtocol::new(self.minecraft_port)),
             Arc::new(PlayerPingProtocol::new(move |info| on_player_ping_impl(&players_ping, &tx, info))),
             Arc::new(PlayerProfilesListProtocol::new(move || with_players_read(&players_list, |l| l.to_vec()).unwrap_or_default())),
         ];
+        protocols.extend(self.custom_protocols.iter().cloned());
 
         // 消费客户端断开事件（对应 C# `ClientDisconnected += OnClientDisconnected`）
         let players = self.players.clone();

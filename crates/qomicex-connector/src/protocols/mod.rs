@@ -159,7 +159,12 @@ impl ProtocolHandler for PlayerPingProtocol {
     }
 }
 
-/// 手动解析玩家心跳 JSON（与 C# `JsonDocument` 语义一致：缺失属性容错，`GetString() ?? ""`）。
+/// 手动解析玩家心跳 JSON。
+///
+/// 容错语义为**有意改进**（对比 C# `GetProperty().GetString()` 裸调用）：
+/// C# 在缺失属性 / 非字符串 / JSON 非法时抛异常导致整个连接被断开且不写响应；
+/// 本实现缺失属性回退空串、解析失败返回 status 255（保持连接，
+/// 且 255 不刷新心跳 → 畸形客户端仍会在 15s 心跳窗口后被剔除）。
 fn parse_player_info(body: &[u8]) -> Result<PlayerInfo, serde_json::Error> {
     let root: Value = serde_json::from_slice(body)?;
     let str_or = |key: &str| {

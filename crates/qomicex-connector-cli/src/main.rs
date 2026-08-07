@@ -144,6 +144,7 @@ async fn run_host(
             "Qomicex".into(),
             port,
             ct.clone(),
+            Vec::new(),
         )
         .await?;
     println!("房间码: {}", center.room_code().raw());

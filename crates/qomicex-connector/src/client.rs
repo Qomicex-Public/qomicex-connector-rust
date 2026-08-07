@@ -11,6 +11,7 @@ use crate::center::scaffolding_center::ScaffoldingCenter;
 use crate::error::ScaffoldingError;
 use crate::guest::scaffolding_guest::ScaffoldingGuest;
 use crate::models::room_code::RoomCode;
+use crate::protocols::ProtocolHandler;
 use crate::relay::nodes;
 use crate::relay::provider::RelayNodeProvider;
 use crate::util::CancellationToken;
@@ -79,6 +80,8 @@ impl ScaffoldingClient {
     }
 
     /// 创建房间（Host）：生成房间码 → 解析中继节点 → 启动联机中心。
+    /// `custom_protocols` 为自定义扩展协议（如 `qml:game_info`），自动参与广告与协商
+    /// （对应 C# `CreateRoomAsync` 的 `customProtocols` 参数）。
     /// 成功后返回联机中心句柄，并纳入本客户端的托管列表（`close_all` 统一关闭）。
     pub async fn create_room(
         &self,
@@ -87,6 +90,7 @@ impl ScaffoldingClient {
         vendor: String,
         minecraft_port: u16,
         ct: CancellationToken,
+        custom_protocols: Vec<Arc<dyn ProtocolHandler>>,
     ) -> Result<Arc<ScaffoldingCenter>, ScaffoldingError> {
         let room_code = RoomCode::generate();
         log::info!("创建房间: 端口 {minecraft_port}");
@@ -99,6 +103,7 @@ impl ScaffoldingClient {
             vendor,
             minecraft_port,
             Some(relay_nodes),
+            custom_protocols,
         ));
         center.start(ct).await?;
 
