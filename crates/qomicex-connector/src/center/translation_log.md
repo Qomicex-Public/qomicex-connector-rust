@@ -66,3 +66,64 @@
 - 引用 `crate::core::protocol_serializer::{deserialize_request_async, serialize_response}`（已有签名）。
 - `lib.rs` 中 `pub mod center;` 已由本 subagent 添加（与 `core` 等模块并列）。
 - 供 ScaffoldingCenter 使用：`TcpServer::new(port, protocols, disconnected_tx)` / `start(ct)` / `stop()` / `port()` / `is_running()`。
+
+---
+
+# 移植记录：联机中心（ScaffoldingCenter）
+
+## 来源与目标
+
+| 源文件（C#） | 目标文件（Rust） |
+| --- | --- |
+| `Qomicex.Connector/Center/ScaffoldingCenter.cs` | `src/center/scaffolding_center.rs` |
+| — | `src/center/mod.rs`（追加 `pub mod scaffolding_center;`） |
+
+## 新增依赖
+
+无。`tokio`（net / sync / time）、`log` 已在 workspace 依赖中。
+
+## 映射说明（一一对应）
+
+| C# | Rust | 说明 |
+| --- | --- | --- |
+| 构造函数 `(roomCode, playerName, machineId, vendor, minecraftPort, easyTier, easyTierPath, logger, customProtocols, relayNodes)` | `new(room_code, player_name, machine_id, vendor, minecraft_port, relay_nodes)` | EasyTier 内部创建；logger / customProtocols / easyTierPath 不移植（见 UNMAPPED） |
+| `RoomCode` / `MinecraftPort` / `PlayerName` / `MachineId` / `Vendor` | `room_code()` / `minecraft_port()` / `player_name()` / `machine_id()` / `vendor()` | 一致 |
+| `event Action<IReadOnlyList<PlayerInfo>>? PlayersChanged` | `players_changed_tx: watch::Sender<Vec<PlayerInfo>>` + `players_changed_rx()` | 见决策 1 |
+| `GetPlayers()`（lock + ToList） | `get_players()` → `snapshot_players` | 读锁重试，见决策 2 |
+| `StartAsync` 端口扫描 1025..65535 + 回退 25000 | `for p in 1025u16..65535 { TcpListener::bind(...).await.is_ok() }` + 回退 25000 | 试绑即释放，TcpServer 再 bind（与 C# 一致） |
+| `advertisedKeys` 标准 6 键 + 自定义键 | 标准 6 键（无自定义协议） | — |
+| `new PingProtocol / ProtocolsProtocol / ServerPortProtocol / PlayerPingProtocol / PlayerProfilesListProtocol` | 同名构造 + `Arc<dyn ProtocolHandler>` | 回调捕获 Arc 状态，见决策 2 |
+| `_tcpServer.ClientDisconnected += OnClientDisconnected` | `tokio::spawn` 消费 `UnboundedReceiver<String>`（空串 → None） | 对齐 tcp_server 事件约定 |
+| `Task.Run(StartAsync(ct))` + `Task.Delay(200)` | `tokio::spawn` 运行 accept 循环 + `sleep(200ms)` + `info!("Scaffolding TCP 端口: {port}")` | 见决策 3 |
+| `new NetworkConfig { ... TcpWhitelist = [$"{tcpPort}", $"{MinecraftPort}"] ... }` | `NetworkConfig { hostname: "scaffolding-mc-server-{port}", ipv4: "10.144.144.1", dhcp: false, tcp_whitelist: vec![...], relay_nodes, ..Default::default() }` | 一致 |
+| `await _easyTier.StartAsync(config, ct)` | `easy_tier.lock().await.start(&config).await?` | lib 版管理器（无 ct 参数） |
+| lock 内 `_players.Add(Host)` | 取 node_id 后 `players.write().await.push(...)` + `notify_players_changed()` | 见决策 4 |
+| `OnPlayerPing` / `OnClientDisconnected`（私有） | `on_player_ping_impl` / `on_client_disconnected_impl`（free fn） | 见决策 2 |
+| `RemovePlayer(machineId)` | `remove_player(&self, machine_id: &str)` | 一致（含"非 Host 才剔除"） |
+| `CloseAsync(ct)` | `close(&self, _ct)`：tcp_server stop → easy_tier stop → 关闭日志 | 见决策 3 / 5 |
+| `Scaffolding TCP 端口` / `联机中心启动完成` / `新玩家加入` / `玩家已离开` / `联机中心已关闭` 日志 | 全部保留（log crate） | 一致 |
+| `Dispose()` | 未移植 | Rust 无 Dispose 惯例 |
+
+## 偏差 / 决策记录
+
+1. **players 字段 Arc 包装（决策）**：约束要求 `tokio::sync::RwLock<Vec<PlayerInfo>>`；因协议回调（`Fn(PlayerInfo) + 'static`）与断开消费任务均需 `'static` 闭包捕获，字段升级为 `Arc<tokio::sync::RwLock<...>>`，`new` 内创建。
+2. **回调实现为 free fn（决策）**：C# 私有实例方法 `OnPlayerPing` / `OnClientDisconnected` 无法在 `'static` 闭包中按 `&self` 调用 → 改为模块级 free fn（`on_player_ping_impl` 等），以 Arc 字段克隆调用，行为逐一对应；同步锁语义用 `try_read/try_write` + `yield_now` 重试（上限 10000）等价 C# `lock(_playersLock)` 阻塞（临界区均无 await，正常不会超限；超限时 warn + 放弃，防御性兜底）。
+3. **服务器任务所有权（决策）**：`TcpServer::start(&mut self)` 在 accept 循环内持有借用 → 循环任务从 `tcp_server` Option 中 take 后运行，退出后 `stop()`（释放监听器）并放回；`close()` 先取走 Option 停止（若已取走则跳过），再取消存储的 `server_ct`（新增字段，供停止运行中的循环）。
+4. **Host 加入后通知（偏差）**：C# 加入 Host 后**不**触发 `PlayersChanged`；按约束发送通知（行为改进，订阅方立即感知房主）。
+5. **close 无取消令牌（偏差）**：`EasyTierManager::stop()` 无 ct 参数，`ct` 参数仅保留签名对齐（命名为 `_ct`）。
+6. **端口访问器（决策）**：新增 `tcp_port: AtomicU16` 字段（启动扫描后 store），支撑同步 `tcp_port()` 访问器。
+7. **启动延迟不可取消（偏差）**：C# `Task.Delay(200, ct)` 可被取消；Rust 用纯 `sleep(200ms)`（取消不中断启动延迟，影响可忽略）。
+
+## 未覆盖（UNMAPPED 汇总）
+
+- `ILogger<T>` 结构化日志参数 → log crate 文本日志
+- `IsRunning` 属性 → 未移植（约束 API 未含）
+- `_customProtocols`（自定义扩展协议）→ 未移植（约束未含；标准 6 键已覆盖）
+- `_easyTierPath` → lib 版 EasyTier 无需外部可执行文件
+- `Dispose()` / `GC.SuppressFinalize` → Rust 无对应
+- `StartAsync` 中 `OperationCanceledException` 捕获 → Rust 中 accept 循环取消即正常返回，无异常路径
+
+## 依赖约定（并行 subagent 协调）
+
+- 供外部使用：`ScaffoldingCenter::new(...)` / `start(ct)` / `close(ct)` / `get_players()` / `remove_player()` / `players_changed_rx()` / `tcp_port()`。
+- `ScaffoldingClient`（lib.rs 层）调用时：创建后 `start`，订阅 `players_changed_rx` 推送 UI，退出时 `close`。

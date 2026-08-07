@@ -2,6 +2,7 @@
 //! 基于 EasyTier 库（非进程）的 Minecraft 联机内网穿透库。
 
 pub mod center;
+pub mod client;
 pub mod core;
 pub mod easytier;
 pub mod error;
