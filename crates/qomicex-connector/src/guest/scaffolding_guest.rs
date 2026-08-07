@@ -148,10 +148,13 @@ impl ScaffoldingGuest {
         log::info!("已加入 EasyTier 网络");
 
         let et = self.easy_tier.clone();
-        let center = discover(move || {
-            let et = et.clone();
-            async move { et.lock().await.get_nodes().await }
-        })
+        let center = discover(
+            move || {
+                let et = et.clone();
+                async move { et.lock().await.get_nodes().await }
+            },
+            &ct,
+        )
         .await?;
         *self.center.lock().await = Some(center.clone());
         *self.config.lock().await = Some(config.clone());

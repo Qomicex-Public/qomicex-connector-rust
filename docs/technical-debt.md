@@ -14,9 +14,9 @@
 - **判定**：有界容错（255 不刷新心跳 → 畸形客户端 ≤15s 被心跳剔除），统一了 SCF 255 错误通道，优于 C# 的异常断连。
 - **遗留**：仅注释已修正（protocols/mod.rs:162）。若未来发现 255 容错被恶意利用（如刷连接），可收紧为「player_ping 255 → 断连」。
 
-### 1.2 discover() 无取消传播 — P2
-- C# `DiscoverAsync(ct)` 取消立即中断 60×500ms 扫描；Rust `discover(get_nodes)` 无 ct 参数，取消后仍跑满 30s。
-- **影响**：仅延迟退出，无功能损失。修复需给 `discover` 加 `ct: &CancellationToken` 并在 sleep 处 select。
+### 1.2 discover() 无取消传播 — ✅ 已修复（2026-08-07）
+- C# `DiscoverAsync(ct)` 取消立即中断 60×500ms 扫描；Rust 原 `discover(get_nodes)` 无 ct 参数，取消后仍跑满 30s。
+- **修复**：`discover(get_nodes, ct)` 加 `&CancellationToken`，sleep 处 `tokio::select!` 取消即返回；调用点（scaffolding_guest.rs connect）已传 ct。
 
 ### 1.3 HeartbeatService 定时漂移 — P3
 - C# PeriodicTimer 固定 5s 节奏；Rust `sleep(interval)` 回调结束后重置（回调耗时 >0 时漂移）。
@@ -89,8 +89,8 @@
 ### 4.2 create_room 参数顺序可读性 — P3
 - `create_room(name, machine_id, vendor, port, ct, custom_protocols)` 中 ct 在 custom_protocols 之前（对齐 C# 参数序），与 `join_room` 的 `custom_protocol_keys` 位置一致但视觉不对称。可后续评审统一。
 
-### 4.3 easytier 依赖版本锁定 — P2
-- git 依赖默认跟 HEAD（当前 287c667 "ci: auto release on version tags"）。发布前建议锁定 `rev = "287c667..."`，避免 EasyTier4QML 上游变更破坏构建。
+### 4.3 easytier 依赖版本锁定 — ✅ 已修复（2026-08-07）
+- git 依赖已锁定 `rev = "287c667"`（EasyTier4QML 当前 HEAD），上游变更不再破坏构建；升级需显式改 rev。
 
 ### 4.4 release 构建体积 — P3
 - release exe 约 27MB（dev 带全部 easytier 模块）。可评估 `strip` / LTO（workspace profile 已有 lto=true + strip=true）/ feature 裁剪。
@@ -111,6 +111,7 @@
 
 ## 修复建议顺序
 
-1. **P1 先行**：2.1 重复键检查（一行级）、3.3 跨机器验证（用户实测）、5.1 集成测试脚手架
-2. **P2**：1.7 字节切片（一行）、1.2 discover 取消、3.1 中继服务验证、3.4 依赖锁 rev、5.2 跨语言实测
-3. **P3**：1.1/1.3/1.4/1.5/1.6/1.8 行为偏差（保持现状，文档已记录）、2.2/2.3/4.1/4.2/4.4 工程优化
+1. **已修复**：2.1 重复键检查、1.7 字节切片、1.2 discover 取消、4.3 依赖锁 rev（2026-08-07）
+2. **P1 剩余**：3.3 跨机器验证（用户实测）、5.1 集成测试脚手架
+3. **P2**：3.1 中继服务验证、5.2 跨语言实测
+4. **P3**：1.1/1.3/1.4/1.5/1.6/1.8 行为偏差（保持现状，文档已记录）、2.2/2.3/4.1/4.2/4.4 工程优化

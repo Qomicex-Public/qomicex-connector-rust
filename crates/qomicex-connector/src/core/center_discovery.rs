@@ -47,7 +47,11 @@ pub fn try_parse_center(nodes: &[EasyTierNode]) -> Option<CenterDiscoveryResult>
 }
 
 /// 轮询扫描节点列表查找联机中心，最多 60 次 × 500ms（超时 30s）；未发现时返回 `CenterNotFound`。
-pub async fn discover<F, Fut>(get_nodes: F) -> Result<CenterDiscoveryResult, ScaffoldingError>
+/// `ct` 取消时立即返回 `CenterNotFound`（对齐 C# `DiscoverAsync(ct)` 的取消传播语义）。
+pub async fn discover<F, Fut>(
+    get_nodes: F,
+    ct: &crate::util::CancellationToken,
+) -> Result<CenterDiscoveryResult, ScaffoldingError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Vec<EasyTierNode>>,
@@ -68,7 +72,15 @@ where
             log::info!("发现联机中心: {}:{}", result.virtual_ip, result.port);
             return Ok(result);
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            _ = ct.cancelled() => {
+                log::debug!("中心发现已取消");
+                return Err(ScaffoldingError::CenterNotFound(
+                    "中心发现已取消".to_string(),
+                ));
+            }
+        }
     }
     Err(ScaffoldingError::CenterNotFound(
         "未在 EasyTier 网络中发现联机中心（超时 30s）".to_string(),

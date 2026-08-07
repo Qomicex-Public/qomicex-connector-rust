@@ -991,7 +991,7 @@ dependencies = [
 [[package]]
 name = "easytier"
 version = "2.6.4"
-source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git#287c6678c3d8425ea36c038a0007b2be35e27d95"
+source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git?rev=287c667#287c6678c3d8425ea36c038a0007b2be35e27d95"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1072,7 +1072,7 @@ dependencies = [
 [[package]]
 name = "easytier-core"
 version = "2.6.4"
-source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git#287c6678c3d8425ea36c038a0007b2be35e27d95"
+source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git?rev=287c667#287c6678c3d8425ea36c038a0007b2be35e27d95"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1135,7 +1135,7 @@ dependencies = [
 [[package]]
 name = "easytier-proto"
 version = "2.6.4"
-source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git#287c6678c3d8425ea36c038a0007b2be35e27d95"
+source = "git+ssh://git@github.com/Qomicex-Public/EasyTier4QML.git?rev=287c667#287c6678c3d8425ea36c038a0007b2be35e27d95"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -23,7 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 cidr = { version = "0.3.1", features = ["serde"] }
 sys-locale = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier", default-features = false, features = [
+easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier", default-features = false, features = [
     "aes-gcm",
     "endpoint-discovery",
     "extended-services",
@@ -32,7 +32,7 @@ easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", packa
     "zstd",
     "smoltcp",
 ] }
-easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier-core", default-features = false, features = [
+easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier-core", default-features = false, features = [
     "aes-gcm",
     "endpoint-discovery",
     "extended-services",
@@ -41,4 +41,4 @@ easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", 
     "zstd",
     "proxy-smoltcp-stack",
 ] }
-easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier-proto", default-features = false, features = ["api", "core"] }
+easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "287c667", package = "easytier-proto", default-features = false, features = ["api", "core"] }
