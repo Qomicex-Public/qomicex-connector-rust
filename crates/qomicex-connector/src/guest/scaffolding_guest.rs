@@ -131,7 +131,8 @@ impl ScaffoldingGuest {
         code: &RoomCode,
         ct: CancellationToken,
     ) -> Result<(), ScaffoldingError> {
-        let hostname_suffix = &self.machine_id[..self.machine_id.len().min(8)];
+        // 字符切片（非 ASCII machine_id 安全；对应 C# `MachineId[..Math.Min(8, Length)]`）
+        let hostname_suffix: String = self.machine_id.chars().take(8).collect();
         let config = NetworkConfig {
             network_name: code.easy_tier_network_name(),
             network_secret: code.easy_tier_network_secret().to_string(),

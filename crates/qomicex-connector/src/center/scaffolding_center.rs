@@ -116,10 +116,17 @@ impl ScaffoldingCenter {
         self.tcp_port.store(tcp_port, Ordering::Relaxed);
 
         // 广告协议键 = 标准 6 键 + 自定义协议键（对应 C# `advertisedKeys.AddRange(...)`）
-        let mut advertised_keys: Vec<String> = ["c:ping", "c:protocols", "c:server_port", "c:player_ping", "c:player_profiles_list", "c:player_easytier_id"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        const STANDARD_KEYS: [&str; 6] = ["c:ping", "c:protocols", "c:server_port", "c:player_ping", "c:player_profiles_list", "c:player_easytier_id"];
+        // 重复键检查（对应 C# `ToDictionary` 遇重复键抛错；避免静默覆盖）
+        let mut seen: Vec<&str> = STANDARD_KEYS.to_vec();
+        for proto in &self.custom_protocols {
+            let key = proto.key();
+            if seen.contains(&key) {
+                return Err(ScaffoldingError::Protocol(format!("自定义协议键冲突: {key}")));
+            }
+            seen.push(key);
+        }
+        let mut advertised_keys: Vec<String> = STANDARD_KEYS.into_iter().map(String::from).collect();
         advertised_keys.extend(self.custom_protocols.iter().map(|p| p.key().to_string()));
 
         // 断开事件通道（对齐 tcp_server 约定：空串映射回 None）
