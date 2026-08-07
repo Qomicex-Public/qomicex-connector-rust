@@ -25,3 +25,5 @@ easytier-proto.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -31,6 +31,7 @@ easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev =
     "tcp-hole-punch",
     "zstd",
     "smoltcp",
+    "socks5",
     "kcp",
     "quic",
     "faketcp",

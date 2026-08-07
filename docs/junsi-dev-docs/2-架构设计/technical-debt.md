@@ -34,10 +34,9 @@
 - C# `RegionInfo.TwoLetterISORegionName`；Rust `sys_locale` 取 `-` 后段（`en_US` 下划线格式回退 "CN"）。
 - **影响**：仅影响中继节点排序优先级，hyphen 格式系统（zh-CN 等主流）等价。
 
-### 1.7 machine_id[..8] 字节切片 — P2
-- C# 字符切片安全；Rust `&machine_id[..len.min(8)]` 字节切片，machine_id 含非 ASCII（中文/emoji）时 **panic**。
-- **影响**：machine_id 通常由调用方生成（ASCII），但库未做防御。
-- **修复**：`machine_id.chars().take(8).collect::<String>()`（一行）。
+### 1.7 machine_id[..8] 字节切片 — ✅ 已修复（2026-08-07）
+- C# 字符切片安全；Rust 原 `&machine_id[..len.min(8)]` 字节切片，machine_id 含非 ASCII（中文/emoji）时 **panic**。
+- **修复**：改为 `machine_id.chars().take(8).collect::<String>()`（字符切片，非 ASCII 安全）。
 
 ### 1.8 ASCII 解码 U+FFFD vs '?' — P3
 - 反序列化畸形 type 串时 Rust `from_utf8_lossy` → U+FFFD，C# `ASCII.GetString` → '?'。
@@ -47,9 +46,9 @@
 
 ## 二、功能缺口
 
-### 2.1 Host 自定义协议重复键检查 — P1
+### 2.1 Host 自定义协议重复键检查 — ✅ 已修复（2026-08-07）
 - C# `ToDictionary(p => p.ProtocolKey)` 遇重复键（自定义撞标准键/互撞）抛错 → 开房失败；Rust HashMap collect 静默覆盖。
-- **修复**：start() 装配前校验标准键与自定义键互斥 + 自定义键去重，冲突返回 `Protocol("自定义协议键冲突: {k}")`。
+- **修复**：start() 装配前校验标准键与自定义键互斥 + 自定义键去重，冲突返回 `Protocol("自定义协议键冲突: {k}")`（scaffolding_center.rs:121-128）。
 
 ### 2.2 ProtocolHandler trait 未显式 'static — P3
 - `pub trait ProtocolHandler: Send + Sync` 无显式 `+ 'static`，trait object 默认隐式携带。显式化可改善报错信息，行为零变化。
@@ -71,10 +70,10 @@
 - **注意**：启用 faketcp 后 Windows 链接需要 `Packet.lib`（easytier build.rs 输出相对 LIBPATH `easytier/third_party/x86_64/`，按 rustc CWD=workspace 根解析）→ 已把 Packet.lib/Packet.dll 放入工作区根 `easytier/third_party/x86_64/`（勿删）。
 - 若仍需 wireguard/websocket/magic-dns：追加对应 feature（编译成本递增）。
 
-### 3.3 P2P 打洞/中继数据面未真实验证 — P1
-- 本机已验证：控制面（开房/加入/发现/协商/路由同步）全通、直连拓扑数据面 echo 通过、SCF 全协议链路（TcpServer↔TcpClient）通过。
-- **未验证**：真实跨机器 + 公网中继下 P2P 打洞建立数据面（localhost 打洞必然失败）。
-- **验证**：交付 release exe（relay/host/guest 子命令）后需用户跨机器实测。
+### 3.3 P2P 打洞/中继数据面未真实验证 — P1（部分验证）
+- 本机已验证：控制面（开房/加入/发现/协商/路由同步）全通、**端口转发数据面全链路**（集成测试 `tests/e2e_direct.rs`，`#[ignore]` 手动触发，验证：发现中心 → 端口转发连接 → 协商 → player_ping → ping → server_port → 玩家列表 → 255）。
+- **关键修复**：easytier `gateway_enabled` 依赖 `socks5` feature，未启用时端口转发监听器不启动（10061）→ 已加 `socks5` feature。
+- **剩余**：真实跨机器 + 公网中继下 P2P 打洞（localhost 打洞必然失败，需用户实测）。
 
 ### 3.4 EasyTier 同机多实例限制 — P3
 - 同机三进程（relay+host+guest）时打洞连接握手失败（`conn closed during wait handshake response`），属 easytier 组网行为，非移植代码缺陷。跨机器环境预期正常。
@@ -99,9 +98,10 @@
 
 ## 五、验证缺口
 
-### 5.1 集成测试无法自动化 — P1
-- 联机全流程依赖真实 EasyTier 实例 + 网络，无法进 `cargo test`（现有 35 个单测均为纯逻辑/协议层）。
-- **建议**：后续可用 `#[ignore]` 标记的集成测试（本地起 relay + host + guest 三实例）纳入 CI 手动触发。
+### 5.1 集成测试无法自动化 — ✅ 已建脚手架（2026-08-07）
+- `crates/qomicex-connector/tests/e2e_direct.rs`（`#[ignore]` 标记，手动触发）：
+  `cargo test -p qomicex-connector --test e2e_direct -- --ignored --nocapture`
+- 直连拓扑（host 固定 listener + guest 端口转发）全流程通过；跨机器/中继打洞场景需真实网络，仍无法 CI 自动化。
 
 ### 5.2 C# ↔ Rust 跨语言互操作实测 — P2
 - 已做字节级 golden test（帧格式），但未与真实 C# 端（Qomicex.Connector）联机互操作实测。
@@ -111,7 +111,7 @@
 
 ## 修复建议顺序
 
-1. **已修复**：2.1 重复键检查、1.7 字节切片、1.2 discover 取消、4.3 依赖锁 rev（2026-08-07）
-2. **P1 剩余**：3.3 跨机器验证（用户实测）、5.1 集成测试脚手架
+1. **已修复**：2.1 重复键检查、1.7 字节切片、1.2 discover 取消、4.3 依赖锁 rev、3.2 features 扩展（含 socks5，修复端口转发）、3.3 本机数据面全链路、5.1 集成测试脚手架（2026-08-07）
+2. **P1 剩余**：3.3 跨机器 P2P 打洞实测（用户实测）
 3. **P2**：3.1 中继服务验证、5.2 跨语言实测
 4. **P3**：1.1/1.3/1.4/1.5/1.6/1.8 行为偏差（保持现状，文档已记录）、2.2/2.3/4.1/4.2/4.4 工程优化
