@@ -74,3 +74,43 @@ where
         "未在 EasyTier 网络中发现联机中心（超时 30s）".to_string(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(virtual_ip: &str, hostname: &str, node_id: &str) -> EasyTierNode {
+        EasyTierNode {
+            virtual_ip: virtual_ip.to_string(),
+            hostname: hostname.to_string(),
+            node_id: node_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn try_parse_center_valid_extracts_ip_and_port() {
+        let nodes = vec![
+            node("10.126.126.1", "scaffolding-mc-server-25565", "123"),
+            node("10.126.126.2", "scaffolding-mc-guest-p1", "456"),
+        ];
+
+        let result = try_parse_center(&nodes).expect("应解析出联机中心");
+
+        assert_eq!(result.virtual_ip, "10.126.126.1");
+        assert_eq!(result.port, 25565);
+    }
+
+    #[test]
+    fn try_parse_center_invalid_port_returns_none() {
+        let nodes = vec![node("10.126.126.1", "scaffolding-mc-server-99999", "123")];
+
+        assert!(try_parse_center(&nodes).is_none());
+    }
+
+    #[test]
+    fn try_parse_center_port_too_low_returns_none() {
+        let nodes = vec![node("10.126.126.1", "scaffolding-mc-server-80", "123")];
+
+        assert!(try_parse_center(&nodes).is_none());
+    }
+}

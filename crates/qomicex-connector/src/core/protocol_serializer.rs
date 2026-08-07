@@ -134,3 +134,108 @@ pub async fn deserialize_response_async<R: AsyncRead + Unpin>(
     let body = read_exact_async(r, body_len).await?;
     Ok(ProtocolResponse { status, body })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(namespace: &str, request_type: &str, body: Vec<u8>) -> ProtocolRequest {
+        ProtocolRequest {
+            namespace: namespace.to_string(),
+            request_type: request_type.to_string(),
+            body,
+        }
+    }
+
+    fn response(status: u8, body: Vec<u8>) -> ProtocolResponse {
+        ProtocolResponse { status, body }
+    }
+
+    #[test]
+    fn roundtrip_request_preserves_data() {
+        let req = request("c", "ping", vec![0x01, 0x02, 0x03]);
+        let bytes = serialize_request(&req);
+
+        let parsed = parse_request(&bytes).expect("请求帧应解析成功");
+
+        assert_eq!(parsed.namespace, "c");
+        assert_eq!(parsed.request_type, "ping");
+        assert_eq!(parsed.body, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn roundtrip_response_preserves_data() {
+        let resp = response(0, vec![0xFF, 0xFE]);
+        let bytes = serialize_response(&resp);
+
+        let parsed = parse_response(&bytes).expect("响应帧应解析成功");
+
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.body, vec![0xFF, 0xFE]);
+    }
+
+    #[test]
+    fn roundtrip_response_empty_body_works() {
+        let resp = response(0, Vec::new());
+        let bytes = serialize_response(&resp);
+
+        let parsed = parse_response(&bytes).expect("空 body 响应帧应解析成功");
+
+        assert_eq!(parsed.status, 0);
+        assert!(parsed.body.is_empty());
+    }
+
+    #[test]
+    fn long_type_name_works() {
+        let req = request("myapp", "very_long_type_name", vec![0x42]);
+        let bytes = serialize_request(&req);
+
+        let parsed = parse_request(&bytes).expect("长类型名请求帧应解析成功");
+
+        assert_eq!(parsed.namespace, "myapp");
+        assert_eq!(parsed.request_type, "very_long_type_name");
+        assert_eq!(parsed.body, vec![0x42]);
+    }
+
+    #[test]
+    fn serialize_request_frame_matches_csharp_bytes() {
+        let req = request("c", "ping", vec![0x01, 0x02, 0x03]);
+
+        let expected = [&[0x06][..], b"c:ping", &[0x00, 0x00, 0x00, 0x03][..], &[0x01, 0x02, 0x03][..]].concat();
+
+        assert_eq!(serialize_request(&req), expected);
+    }
+
+    #[test]
+    fn serialize_response_frame_matches_csharp_bytes() {
+        let resp = response(0, vec![0xFF, 0xFE]);
+
+        let expected = [&[0x00][..], &[0x00, 0x00, 0x00, 0x02][..], &[0xFF, 0xFE][..]].concat();
+
+        assert_eq!(serialize_response(&resp), expected);
+    }
+
+    #[test]
+    fn parse_request_accepts_csharp_known_bytes() {
+        let bytes = [
+            0x0A, 0x6D, 0x79, 0x61, 0x70, 0x70, 0x3A, 0x70, 0x69, 0x6E, 0x67, 0x00, 0x00, 0x00,
+            0x01, 0x42,
+        ];
+
+        let parsed = parse_request(&bytes).expect("C# 已知请求帧应解析成功");
+
+        assert_eq!(parsed.namespace, "myapp");
+        assert_eq!(parsed.request_type, "ping");
+        assert_eq!(parsed.body, vec![0x42]);
+    }
+
+    #[test]
+    fn parse_response_accepts_csharp_known_bytes() {
+        let bytes = [0x01, 0x00, 0x00, 0x00, 0x02, 0x01, 0x02];
+
+        let parsed = parse_response(&bytes).expect("C# 已知响应帧应解析成功");
+
+        assert_eq!(parsed.status, 1);
+        assert_eq!(parsed.body, vec![0x01, 0x02]);
+    }
+}

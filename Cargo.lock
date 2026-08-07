@@ -2931,10 +2931,12 @@ dependencies = [
 name = "qomicex-connector-cli"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "env_logger",
  "log",
  "qomicex-connector",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
