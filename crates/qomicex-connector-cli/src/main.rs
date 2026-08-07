@@ -1,6 +1,10 @@
 use std::error::Error;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use easytier_core::config::toml::{ConfigLoader as _, NetworkIdentity, TomlConfig};
+use easytier_core::instance::manager::ConfigFileControl;
 
 use qomicex_connector::client::ScaffoldingClient;
 use qomicex_connector::error::ScaffoldingError;
@@ -9,18 +13,33 @@ use qomicex_connector::util::CancellationToken;
 #[derive(Parser)]
 #[command(name = "qomicex-connector-cli")]
 struct Cli {
+    /// 中继节点（可重复指定，如 tcp://1.2.3.4:11010；不指定则在线获取）
+    #[arg(long, value_name = "URL")]
+    relay: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// 本地中继节点（供测试/自建中继）
+    #[command(alias = "relay")]
+    Relay {
+        /// 监听地址，如 0.0.0.0:11010（默认 0.0.0.0:11010）
+        #[arg(long, default_value = "0.0.0.0:11010")]
+        listen: String,
+        /// 运行时长（秒），0 表示直到 Ctrl+C
+        #[arg(long, default_value = "0")]
+        seconds: u64,
+    },
+    /// 房主：创建房间
     #[command(alias = "create")]
     Host {
         mc_port: String,
         #[arg(default_value = "Qomicex-Player")]
         player_name: String,
     },
+    /// 房客：加入房间
     #[command(alias = "join")]
     Guest {
         room_code: String,
@@ -34,33 +53,80 @@ async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
-    let machine_id = uuid::Uuid::new_v4().simple().to_string();
-    let machine_id = &machine_id[..12];
+    let relay = if cli.relay.is_empty() { None } else { Some(cli.relay) };
 
-    let client = ScaffoldingClient::new(None, None, None, None);
-    let ct = CancellationToken::new();
+    match cli.command {
+        Command::Relay { listen, seconds } => run_relay(&listen, seconds).await,
+        _ => {
+            let machine_id = uuid::Uuid::new_v4().simple().to_string();
+            let machine_id = &machine_id[..12];
+            let client = ScaffoldingClient::new(relay, None, None, None);
+            let ct = CancellationToken::new();
 
-    let result = match cli.command {
-        Command::Host { mc_port, player_name } => {
-            let port: u16 = mc_port
-                .parse()
-                .map_err(|_| ScaffoldingError::Protocol("无效端口".into()))?;
-            run_host(&client, &ct, &player_name, machine_id, port).await
-        }
-        Command::Guest { room_code, player_name } => {
-            run_guest(&client, &ct, &room_code, &player_name, machine_id).await
-        }
-    };
+            let result = match cli.command {
+                Command::Host { mc_port, player_name } => {
+                    let port: u16 = mc_port
+                        .parse()
+                        .map_err(|_| ScaffoldingError::Protocol("无效端口".into()))?;
+                    run_host(&client, &ct, &player_name, machine_id, port).await
+                }
+                Command::Guest { room_code, player_name } => {
+                    run_guest(&client, &ct, &room_code, &player_name, machine_id).await
+                }
+                _ => unreachable!(),
+            };
 
-    client.close_all(ct.clone()).await;
+            client.close_all(ct.clone()).await;
 
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            println!("错误: {e}");
-            std::process::exit(1);
+            match result {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    println!("错误: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
+}
+
+async fn run_relay(listen: &str, seconds: u64) -> Result<(), Box<dyn Error>> {
+    println!("启动本地中继，监听 {listen}...");
+    let cfg = TomlConfig::default();
+    cfg.set_network_identity(NetworkIdentity::new(
+        "qomicex-local-relay".to_string(),
+        "qomicex-relay-secret".to_string(),
+    ));
+    cfg.set_hostname(Some("qomicex-local-relay".to_string()));
+    cfg.set_dhcp(true);
+    cfg.set_listeners(vec![
+        format!("tcp://{listen}").parse()?,
+        format!("udp://{listen}").parse()?,
+    ]);
+    let mut flags = cfg.get_flags();
+    flags.no_tun = true;
+    flags.use_smoltcp = true;
+    flags.multi_thread = true;
+    flags.latency_first = true;
+    cfg.set_flags(flags);
+
+    let manager = Arc::new(easytier::instance::factory::native_instance_manager());
+    let id = manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
+    for _ in 0..60 {
+        if manager.instance(id).is_some_and(|i| i.is_ready()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    println!("中继已就绪，按 Ctrl+C 退出");
+
+    if seconds > 0 {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+    } else {
+        tokio::signal::ctrl_c().await?;
+    }
+    manager.delete_network_instances([id]).await?;
+    println!("中继已停止");
+    Ok(())
 }
 
 async fn run_host(
