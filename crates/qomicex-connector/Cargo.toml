@@ -1,0 +1,20 @@
+[package]
+name = "qomicex-connector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "qomicex_connector"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+log.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+sys-locale.workspace = true
+reqwest.workspace = true
+easytier.workspace = true

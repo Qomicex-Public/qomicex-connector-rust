@@ -1,0 +1,63 @@
+# MAPPING_TABLE.yaml — Qomicex.Connector (C#) → qomicex-connector (Rust)
+
+项目根：`C:\Project\qomicex-connector-rust`，分支 `migrate/qomicex-connector`
+源仓库：`C:\Users\tmoam\AppData\Local\Temp\opencode\scaffolding-src`
+EasyTier 库：`C:\Users\tmoam\AppData\Local\Temp\opencode\easytier4qml`（git 依赖 EasyTier4QML）
+
+## 架构决策（ADR 前置记录）
+- D1: EasyTier 以 **git 依赖 easytier crate**（非 path/workspace），features 显式声明
+- D2: Host 也用 **smoltcp 无 TUN**（no_tun=true + use_smoltcp=true），不依赖 wintun 驱动
+- D3: 结构 = workspace：`crates/qomicex-connector`(lib) + `crates/qomicex-connector-cli`(bin)
+- D4: 启动完成检测：轮询 `instance.is_ready()`（替代 C# 解析 stdout "listener added"）
+- D5: 节点列表：`instance.route_snapshots()` → Route{peer_id, hostname, ipv4_addr}（替代 easytier-cli peer）
+- D6: NodeId：`instance.peer_id()`；VirtualIp：node_snapshot/固定 ipv4（Host 固定 10.144.144.1，Guest DHCP）
+- D7: 日志用 `log` crate + 可选 tracing（不强制 loggerFactory）；CLI 里 env_logger
+
+## 依赖清单（Cargo.toml）
+- tokio (net, io-util, time, sync, macros, rt, rt-multi-thread)
+- easytier = { git = "https://github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier", default-features = false, features = ["aes-gcm","endpoint-discovery","extended-services","management","tcp-hole-punch","zstd","smoltcp"] }
+- serde / serde_json / regex / reqwest(rustls) / log / thiserror
+- 可选 dev: env_logger, proptest(否)
+
+## 模块映射（文件级）
+| C# 文件 | Rust 文件 | 备注 |
+|---|---|---|
+| Models/RoomCode.cs | crates/qomicex-connector/src/models/room_code.rs | Generate/Parse/校验和 mod7，全复制 |
+| Models/ProtocolFrame.cs | src/models/protocol.rs | ProtocolRequest/ProtocolResponse{status,body,is_success} |
+| Models/PlayerInfo.cs | src/models/player.rs | PlayerInfo, PlayerKind(Host/Guest) |
+| Models/PlayerProfileEntry.cs | src/models/player.rs | #[serde(rename_all="snake_case")] name/machine_id/easytier_id/vendor/kind |
+| Models/EasyTierNode.cs | src/models/easy_tier_node.rs | VirtualIp/Hostname/NodeId |
+| Models/NetworkConfig.cs | src/models/network_config.rs | NetworkName/Secret/Hostname/NoTun/UseSmoltcp/Dhcp/Ipv4/ListenRandomPorts/TcpWhitelist/PortForwards/RelayNodes |
+| ScaffoldingException.cs | src/error.rs | ScaffoldingError 枚举 + RoomCodeInvalid/EasyTierStart/EasyTierTimeout/CenterNotFound/CenterConnection/Protocol/HeartbeatTimeout |
+| Core/ProtocolSerializer.cs | src/core/protocol_serializer.rs | 帧格式：[1B typeLen][type ASCII][4B BE bodyLen][body]；resp [1B status][4B BE len][body] |
+| Core/ProtocolNegotiator.cs | src/core/protocol_negotiator.rs | Negotiate 取交集 |
+| Core/CenterDiscoveryService.cs | src/core/center_discovery.rs | CenterDiscoveryResult{virtual_ip,port}, DiscoverAsync(60×500ms), TryParseCenter 正则 ^scaffolding-mc-server-(\d+)$ |
+| Core/HeartbeatService.cs | src/core/heartbeat.rs | PeriodicTimer 5s，失败 on_failed |
+| Protocols/IProtocol.cs | src/protocols/mod.rs | ProtocolHandler trait + Ping/Protocols/ServerPort/PlayerPing/PlayerProfilesList/DelegateProtocol |
+| EasyTierManager.cs | src/easytier/manager.rs | lib 版：TomlConfig 构建 + run_network_instance + is_ready 轮询 + route_snapshots 节点列表 + delete_network_instances |
+| RelayNodes.cs | src/relay/nodes.rs | Default 常量 + Resolve |
+| RelayNodeProvider.cs | src/relay/provider.rs | FetchAsync(10s 超时, UA, region 排序, http 节点解析, 回退 Default) |
+| Center/ScaffoldingCenter.cs | src/center/mod.rs | RoomCode/MinecraftPort/PlayersChanged(→tokio watch/broadcast)/StartAsync/CloseAsync |
+| Center/TcpServer.cs | src/center/tcp_server.rs | 端口扫描 1025..65535, 心跳 15s 超时, ClientDisconnected 回调 |
+| Guest/ScaffoldingGuest.cs | src/guest/mod.rs | ConnectAsync(直连/转发), MapMinecraftPortAsync, SendAsync 系列, LeaveAsync |
+| Guest/TcpClient.cs | src/guest/tcp_client.rs | 连接 + 发送锁 + 读超时 15s |
+| ScaffoldingClient.cs | src/lib.rs (client) | CreateRoomAsync/JoinRoomAsync/CloseAsync, 中继缓存 |
+| Console/Program.cs | crates/qomicex-connector-cli/src/main.rs | host/guest 子命令 |
+
+## 关键行为映射
+- 端口扫描：TcpListener 试绑 (C# 从 1025 起递增) → tokio TcpListener::bind 依次尝试，失败回退 25000
+- 等待启动：C# 30s 超时 + 2s 缓冲 → is_ready() 轮询 ≤30s + 2s 缓冲
+- Guest 直连失败 → Stop → PortForwards=[tcp://127.0.0.1:{local}/{vip}:{port}] → 重启 → 10 次重试×3s
+- MapMinecraftPort 转发模式：心跳停+断连+Stop+加 MC 转发+重启+重连+心跳重启
+- 协议协商：body = 协议键 join('\0')，取交集
+- PlayerProfilesList：JSON 数组，snake_case，kind="HOST"/"GUEST"
+- player_ping 心跳：协商含 c:player_easytier_id 时带 easytier_id 字段
+- ServerPort 响应：大端 u16；状态 32-63 抛"MC 服务器未启动"
+- 未知协议 → status 255 + UTF8 "未知协议: {key}"
+- 事件：C# event → Rust 用 tokio::sync::watch / broadcast（PlayersChanged、ConnectionLost、ClientDisconnected）
+
+## 待定（实现时确认后回填）
+- T1: TomlConfig 各 setter 精确签名（set_network_identity/set_ipv4/set_listeners/set_peers/set_port_forwards/set_tcp_whitelist/set_udp_whitelist/set_flags/set_hostname/set_dhcp/set_inst_name）
+- T2: flags 结构字段名（no_tun/use_smoltcp/data_compress_algo/multi_thread/latency_first/enable_kcp_proxy）
+- T3: Route 类型字段（peer_id/hostname/ipv4_addr 类型，Ipv4Inet→地址提取）
+- T4: network_info vs route_snapshots 选择（倾向 route_snapshots）

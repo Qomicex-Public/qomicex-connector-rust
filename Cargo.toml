@@ -1,6 +1,31 @@
-[package]
-name = "qomicex-connector-rust"
+[workspace]
+resolver = "2"
+members = [
+    "crates/qomicex-connector",
+    "crates/qomicex-connector-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "macros", "rt", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+log = "0.4"
+thiserror = "2"
+rand = { version = "0.8", features = ["std_rng"] }
+sys-locale = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", package = "easytier", default-features = false, features = [
+    "aes-gcm",
+    "endpoint-discovery",
+    "extended-services",
+    "management",
+    "tcp-hole-punch",
+    "zstd",
+    "smoltcp",
+] }
