@@ -43,6 +43,8 @@ pub struct RelayNodeProvider {
     user_agent: String,
     preferred_region: Option<String>,
     client: reqwest::Client,
+    /// 端点覆盖（默认 `ENDPOINT`；调用方可注入自建节点服务）。
+    endpoint: Option<String>,
 }
 
 impl RelayNodeProvider {
@@ -61,12 +63,22 @@ impl RelayNodeProvider {
             user_agent,
             preferred_region,
             client,
+            endpoint: None,
         }
     }
 
-    /// 从默认端点获取中继节点列表。
+    /// 注入节点服务端点（覆盖默认 `ENDPOINT`；默认行为不变）。
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// 从节点服务获取中继节点列表（默认端点或注入端点）。
     pub async fn fetch(&self) -> Vec<String> {
-        self.fetch_from(ENDPOINT).await
+        match self.endpoint.as_deref() {
+            Some(ep) => self.fetch_from(ep).await,
+            None => self.fetch_from(ENDPOINT).await,
+        }
     }
 
     /// 从指定端点获取中继节点列表（内部可注入实现，便于测试）。

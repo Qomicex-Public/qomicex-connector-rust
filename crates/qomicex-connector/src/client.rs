@@ -26,6 +26,8 @@ pub struct ScaffoldingClient {
     user_agent: Option<String>,
     /// 首选节点地区（未指定时自动检测系统地区）。
     preferred_region: Option<String>,
+    /// 节点服务端点覆盖（默认 `RelayNodeProvider::ENDPOINT`）。
+    relay_endpoint: Option<String>,
     /// 已解析的中继节点缓存（`Some` 表示已解析，后续直接复用）。
     cached_relay_nodes: tokio::sync::Mutex<Option<Vec<String>>>,
     /// 本客户端创建的联机中心（Host 房间）列表。
@@ -52,10 +54,17 @@ impl ScaffoldingClient {
             additional_relay_nodes,
             user_agent,
             preferred_region,
+            relay_endpoint: None,
             cached_relay_nodes: tokio::sync::Mutex::new(None),
             managed_centers: tokio::sync::Mutex::new(Vec::new()),
             managed_guests: tokio::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// 注入节点服务端点（覆盖默认 `RelayNodeProvider::ENDPOINT`；默认行为不变）。
+    pub fn with_relay_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.relay_endpoint = Some(endpoint.into());
+        self
     }
 
     /// 解析中继节点列表（结果缓存）：
@@ -71,6 +80,10 @@ impl ScaffoldingClient {
             nodes::resolve(Some(override_nodes), self.additional_relay_nodes.as_deref())
         } else {
             let provider = RelayNodeProvider::new(self.user_agent.clone(), self.preferred_region.clone());
+            let provider = match &self.relay_endpoint {
+                Some(ep) => provider.with_endpoint(ep.clone()),
+                None => provider,
+            };
             let fetched = provider.fetch().await;
             nodes::resolve(Some(&fetched), self.additional_relay_nodes.as_deref())
         };
