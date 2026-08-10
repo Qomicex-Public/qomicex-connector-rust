@@ -147,7 +147,12 @@ impl ScaffoldingClient {
             custom_protocol_keys,
             Some(relay_nodes),
         ));
-        guest.connect(&code, ct).await?;
+        if let Err(e) = guest.connect(&code, ct).await {
+            // connect 失败时清理本次启动的 EasyTier 实例，避免残留实例累积
+            // （同名节点干扰路由、占用 RPC 端口，导致后续 join discover 超时）。
+            guest.leave().await;
+            return Err(e);
+        }
 
         self.managed_guests.lock().await.push(guest.clone());
         log::info!("成功加入房间");
