@@ -179,6 +179,7 @@ impl ScaffoldingCenter {
             dhcp: false,
             tcp_whitelist: vec![tcp_port.to_string(), self.minecraft_port.to_string()],
             relay_nodes: self.relay_nodes.clone(),
+            bind_ip: crate::util::resolve_bind_ip(),
             ..Default::default()
         };
         self.easy_tier.lock().await.start(&config).await?;

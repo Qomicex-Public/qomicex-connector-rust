@@ -19,6 +19,9 @@ pub struct NetworkConfig {
     pub ipv4: Option<String>,
     /// 是否使用随机监听端口（默认 true）。
     pub listen_random_ports: bool,
+    /// 出站/监听绑定 IP（None = 0.0.0.0 由系统选接口；Some = 指定物理网卡 IP，
+    /// 规避 VPN 虚拟网卡（如 Radmin）抢默认路由导致的单向劫持）。
+    pub bind_ip: Option<String>,
     /// TCP 白名单（默认空）。
     pub tcp_whitelist: Vec<String>,
     /// 端口转发规则（默认空）。
@@ -39,6 +42,7 @@ impl Default for NetworkConfig {
             dhcp: true,
             ipv4: None,
             listen_random_ports: true,
+            bind_ip: None,
             tcp_whitelist: Vec::new(),
             port_forwards: Vec::new(),
             relay_nodes: None,

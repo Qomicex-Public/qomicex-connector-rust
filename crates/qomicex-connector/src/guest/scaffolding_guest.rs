@@ -141,6 +141,7 @@ impl ScaffoldingGuest {
             use_smoltcp: true,
             dhcp: true,
             relay_nodes: self.relay_nodes.clone(),
+            bind_ip: crate::util::resolve_bind_ip(),
             ..Default::default()
         };
 

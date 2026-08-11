@@ -1140,7 +1140,7 @@ dependencies = [
  "moka",
  "natpmp",
  "netlink-sys",
- "network-interface",
+ "network-interface 2.0.5",
  "nix 0.29.0",
  "once_cell",
  "parking_lot",
@@ -2812,6 +2812,18 @@ dependencies = [
 
 [[package]]
 name = "network-interface"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a43439bf756eed340bdf8feba761e2d50c7d47175d87545cd5cbe4a137c4d1"
+dependencies = [
+ "cc",
+ "libc",
+ "thiserror 1.0.69",
+ "winapi",
+]
+
+[[package]]
+name = "network-interface"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
@@ -2884,7 +2896,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3382,6 +3394,7 @@ dependencies = [
  "easytier-core",
  "easytier-proto",
  "log",
+ "network-interface 1.1.4",
  "rand 0.8.7",
  "regex",
  "reqwest",
@@ -3904,7 +3917,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

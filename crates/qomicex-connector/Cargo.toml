@@ -16,6 +16,7 @@ log.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 uuid.workspace = true
+network-interface.workspace = true
 cidr.workspace = true
 sys-locale.workspace = true
 reqwest.workspace = true

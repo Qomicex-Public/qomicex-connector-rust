@@ -185,9 +185,13 @@ fn build_toml_config(config: &NetworkConfig) -> Result<TomlConfig, ScaffoldingEr
     }
 
     // -l tcp://0.0.0.0:0 -l udp://0.0.0.0:0（ListenRandomPorts；port 0 = 随机端口，与 C# 一致；vec![] 表示完全不监听（仅出站），故不用）
+    // bind_ip 非空时监听绑定指定物理网卡 IP：出站 socket 复用 listener 的本地地址，
+    // 源地址固定在物理网卡上，规避 VPN 虚拟网卡（Radmin 等）抢默认路由导致的单向劫持
+    // （实测：出站 UDP 从 radmin 网卡发出但回包进不来 → 中继不可达 → 房间加入失败）。
     if config.listen_random_ports {
-        let listeners = ["tcp://0.0.0.0:0", "udp://0.0.0.0:0"]
-            .iter()
+        let bind = config.bind_ip.as_deref().unwrap_or("0.0.0.0");
+        let listeners = [format!("tcp://{bind}:0"), format!("udp://{bind}:0")]
+            .into_iter()
             .map(|uri| uri.parse().map_err(|_| ScaffoldingError::EasyTierStart(format!("无效的监听地址: {uri}"))))
             .collect::<Result<Vec<_>, _>>()?;
         cfg.set_listeners(listeners);
