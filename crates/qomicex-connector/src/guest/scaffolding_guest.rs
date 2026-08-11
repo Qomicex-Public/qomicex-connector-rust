@@ -167,31 +167,25 @@ impl ScaffoldingGuest {
             *self.use_port_forward.lock().await = false;
             log::info!("虚拟 IP 直连成功，无需端口转发");
         } else {
-            // 失败则重启 EasyTier 加入 Center port-forward
+            // 失败则动态添加 Center port-forward（管理 RPC 热更新，不重启实例：
+            // 重启会重建虚拟网络，重试窗口内路由未恢复 → 转发连不上 Center）
             let local_port = find_free_local_port().await;
             log::info!(
-                "虚拟 IP 不可达，重启 EasyTier 建立端口转发 127.0.0.1:{local_port} -> {}:{}",
+                "虚拟 IP 不可达，建立端口转发 127.0.0.1:{local_port} -> {}:{}",
                 center.virtual_ip,
                 center.port
             );
-
-            self.easy_tier.lock().await.stop().await?;
+            let forward = format!(
+                "tcp://127.0.0.1:{local_port}/{}:{}",
+                center.virtual_ip, center.port
+            );
+            self.easy_tier.lock().await.add_port_forward(&forward).await?;
             {
                 let mut cfg = self.config.lock().await;
                 if let Some(c) = cfg.as_mut() {
-                    c.port_forwards = vec![format!(
-                        "tcp://127.0.0.1:{local_port}/{}:{}",
-                        center.virtual_ip, center.port
-                    )];
+                    c.port_forwards.push(forward);
                 }
             }
-            let updated = self
-                .config
-                .lock()
-                .await
-                .clone()
-                .ok_or_else(|| ScaffoldingError::CenterConnection("尚未加入房间".into()))?;
-            self.easy_tier.lock().await.start(&updated).await?;
 
             if !self
                 .try_connect_with_retry("127.0.0.1", local_port, 10, ct.clone())
@@ -390,7 +384,7 @@ impl ScaffoldingGuest {
     /// 端口转发模式：重启 EasyTier 加入 MC 转发规则，返回 127.0.0.1 + 本地端口。
     pub async fn map_minecraft_port(
         &self,
-        ct: CancellationToken,
+        _ct: CancellationToken,
     ) -> Result<(String, u16), ScaffoldingError> {
         let has_room = {
             let cfg_ready = self.config.lock().await.is_some();
@@ -427,54 +421,28 @@ impl ScaffoldingGuest {
             return Ok((center.virtual_ip, mc_port));
         }
 
-        // 端口转发模式：重启 EasyTier，把 Center + MC 两条转发一起加进去
+        // 端口转发模式：动态添加 MC 转发（管理 RPC 热更新，不重启实例）。
+        // 重启会重建虚拟网络：Center 连接断裂后需重新学习路由，重试窗口内
+        // 重连失败（实测 BrokenPipe）；热更新保持 Center 连接不断。
         let local_mc_port = find_free_local_port().await;
-        let center_forward = {
-            let cfg = self.config.lock().await.clone();
-            cfg.ok_or_else(|| ScaffoldingError::CenterConnection("尚未加入房间".into()))?
-                .port_forwards
-                .first()
-                .cloned()
-                .ok_or_else(|| {
-                    ScaffoldingError::Protocol("缺少 Center 端口转发配置".into())
-                })?
-        };
         log::info!(
-            "重启 EasyTier，MC 端口转发 127.0.0.1:{local_mc_port} -> {}:{mc_port}",
+            "MC 端口转发 127.0.0.1:{local_mc_port} -> {}:{mc_port}",
             center.virtual_ip
         );
-
-        self.stop_heartbeat().await;
-        self.tcp.lock().await.disconnect();
-        self.easy_tier.lock().await.stop().await?;
+        let forward = format!(
+            "tcp://127.0.0.1:{local_mc_port}/{}:{mc_port}",
+            center.virtual_ip
+        );
+        self.easy_tier.lock().await.add_port_forward(&forward).await?;
         {
             let mut cfg = self.config.lock().await;
             if let Some(c) = cfg.as_mut() {
-                c.port_forwards = vec![
-                    center_forward.clone(),
-                    format!("tcp://127.0.0.1:{local_mc_port}/{}:{mc_port}", center.virtual_ip),
-                ];
+                c.port_forwards.push(forward);
             }
         }
-        let updated = self
-            .config
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| ScaffoldingError::CenterConnection("尚未加入房间".into()))?;
-        self.easy_tier.lock().await.start(&updated).await?;
 
-        let center_local_port = parse_local_port_from_forward(&center_forward);
-        if !self
-            .try_connect_with_retry("127.0.0.1", center_local_port, 10, ct.clone())
-            .await?
-        {
-            return Err(ScaffoldingError::CenterConnection(
-                "MC 转发建立后重连 Center 失败".into(),
-            ));
-        }
-
-        self.start_heartbeat(ct).await;
+        // 转发监听建立即视为成功（RPC 返回 Ok 表示 apply_port_forwards 已生效）；
+        // 不能用 try_connect 验证——MC 转发目标是对端 MC 服务器，非 SCF 协议端点。
         *self.minecraft_host.lock().await = Some("127.0.0.1".into());
         *self.minecraft_port.lock().await = Some(local_mc_port);
         Ok(("127.0.0.1".to_string(), local_mc_port))
@@ -695,19 +663,6 @@ fn split_key(key: &str) -> Result<(String, String), ScaffoldingError> {
             "无效的协议键格式: {key}"
         ))),
     }
-}
-
-/// 从端口转发规则解析本地端口：`tcp://127.0.0.1:LOCAL/REMOTE:PORT` → LOCAL。
-fn parse_local_port_from_forward(forward: &str) -> u16 {
-    let rest = forward
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(forward);
-    let head = rest.split('/').next().unwrap_or(rest);
-    head.rsplit(':')
-        .next()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(0)
 }
 
 /// 获取本地空闲端口：绑定 `127.0.0.1:0` 取端口后立即释放。

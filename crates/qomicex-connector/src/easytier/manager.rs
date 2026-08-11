@@ -128,6 +128,43 @@ impl EasyTierManager {
             .map(route_to_node)
             .collect()
     }
+
+    /// 运行中动态添加端口转发（管理 RPC 热更新，不重启实例）。
+    ///
+    /// 重启会重建虚拟网络：新实例需重连中继并重新学习路由，重试窗口内
+    /// 转发目标不可达（实测 port-forward BrokenPipe）。热更新保持既有
+    /// Center 连接不断，转发规则立即生效。
+    pub async fn add_port_forward(&self, forward: &str) -> Result<(), ScaffoldingError> {
+        let Some(instance_id) = self.instance_id else {
+            return Ok(());
+        };
+        if self.manager.instance(instance_id).is_none() {
+            return Ok(());
+        }
+        let (bind, dst, proto) = parse_forward_parts(forward)?;
+        let payload = serde_json::json!({
+            "patch": {
+                "port_forwards": [{
+                    "action": "ADD",
+                    "cfg": {
+                        "bind_addr": { "ipv4": { "addr": ipv4_to_u32(&bind.0) }, "port": bind.1 },
+                        "dst_addr": { "ipv4": { "addr": ipv4_to_u32(&dst.0) }, "port": dst.1 },
+                        "socket_type": if proto == "udp" { "UDP" } else { "TCP" }
+                    }
+                }]
+            }
+        });
+        easytier_core::management::call_instance_json_rpc(
+            &self.manager,
+            "api.config.ConfigRpcService",
+            "patch_config",
+            None,
+            payload,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| ScaffoldingError::EasyTierStart(format!("动态添加端口转发失败: {forward}: {e}")))
+    }
 }
 
 /// 构建 TomlConfig，与 C# `BuildArgs` 一一对应。
@@ -205,4 +242,38 @@ fn route_to_node(route: Route) -> EasyTierNode {
 /// 去除 IPv4 地址的掩码部分（对齐 C# 对 `/24` 的截断）。
 fn strip_cidr(ip: &str) -> String {
     ip.split_once('/').map_or_else(|| ip.to_string(), |(addr, _)| addr.to_string())
+}
+
+/// 解析端口转发规则为 `(bind_addr, dst_addr, proto)`（仅支持 IPv4 地址）。
+fn parse_forward_parts(
+    raw: &str,
+) -> Result<((String, u16), (String, u16), String), ScaffoldingError> {
+    let invalid = |msg: String| ScaffoldingError::EasyTierStart(msg);
+    let (proto, rest) = raw
+        .split_once("://")
+        .ok_or_else(|| invalid(format!("无效的端口转发格式: {raw}")))?;
+    let (bind, dst) = rest
+        .split_once('/')
+        .ok_or_else(|| invalid(format!("无效的端口转发格式: {raw}")))?;
+    let bind_addr: SocketAddr = bind
+        .parse()
+        .map_err(|_| invalid(format!("无效的端口转发绑定地址: {bind}")))?;
+    let dst_addr: SocketAddr = dst
+        .parse()
+        .map_err(|_| invalid(format!("无效的端口转发目标地址: {dst}")))?;
+    if !bind_addr.is_ipv4() || !dst_addr.is_ipv4() {
+        return Err(invalid(format!("端口转发仅支持 IPv4 地址: {raw}")));
+    }
+    Ok((
+        (bind_addr.ip().to_string(), bind_addr.port()),
+        (dst_addr.ip().to_string(), dst_addr.port()),
+        proto.to_string(),
+    ))
+}
+
+/// IPv4 点分字符串 → 网络字节序 u32（对应 proto `Ipv4Addr.addr`）。
+fn ipv4_to_u32(ip: &str) -> u32 {
+    ip.split('.')
+        .filter_map(|part| part.parse::<u32>().ok())
+        .fold(0u32, |acc, octet| (acc << 8) | octet)
 }
