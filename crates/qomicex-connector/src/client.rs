@@ -6,6 +6,7 @@
 //! 用完即释放（语句结束 / 块作用域即 drop），禁止跨 `await` 持锁，避免死锁。
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::center::scaffolding_center::ScaffoldingCenter;
 use crate::error::ScaffoldingError;
@@ -15,6 +16,11 @@ use crate::protocols::ProtocolHandler;
 use crate::relay::nodes;
 use crate::relay::provider::RelayNodeProvider;
 use crate::util::CancellationToken;
+
+/// 中继节点列表缓存 TTL：解析失败/节点变更可自愈，避免一次性瞬时故障
+/// 把残缺列表锁死到进程生命周期（实测：单次 http 节点解析失败被静默跳过
+/// 并永久缓存，导致后续 join 一直用缺节点的列表）。
+const RELAY_NODE_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// 连接器库入口客户端。
 pub struct ScaffoldingClient {
@@ -28,8 +34,8 @@ pub struct ScaffoldingClient {
     preferred_region: Option<String>,
     /// 节点服务端点覆盖（默认 `RelayNodeProvider::ENDPOINT`）。
     relay_endpoint: Option<String>,
-    /// 已解析的中继节点缓存（`Some` 表示已解析，后续直接复用）。
-    cached_relay_nodes: tokio::sync::Mutex<Option<Vec<String>>>,
+    /// 已解析的中继节点缓存（`(解析时间, 列表)`；TTL 内复用，过期/空列表重新解析）。
+    cached_relay_nodes: tokio::sync::Mutex<Option<(Instant, Vec<String>)>>,
     /// 本客户端创建的联机中心（Host 房间）列表。
     managed_centers: tokio::sync::Mutex<Vec<Arc<ScaffoldingCenter>>>,
     /// 本客户端创建的访客端（Guest 连接）列表。
@@ -67,13 +73,18 @@ impl ScaffoldingClient {
         self
     }
 
-    /// 解析中继节点列表（结果缓存）：
-    /// 缓存命中直接返回；`override` 非空 → `resolve(override, additional)`；
+    /// 解析中继节点列表（TTL 缓存）：
+    /// 缓存未过期直接返回；`override` 非空 → `resolve(override, additional)`；
     /// 否则远程获取 → `resolve(fetched, additional)`。
+    /// 空列表不写缓存（下次调用重新解析）；过期后重新解析，失败仍返回旧缓存结果，
+    /// 避免远端暂时不可用时列表被清空。
     async fn resolve_relay_nodes(&self) -> Vec<String> {
+        let now = Instant::now();
         let cached = self.cached_relay_nodes.lock().await.clone();
-        if let Some(nodes) = cached {
-            return nodes;
+        if let Some((cached_at, nodes)) = cached.as_ref() {
+            if !nodes.is_empty() && now.duration_since(*cached_at) < RELAY_NODE_CACHE_TTL {
+                return nodes.clone();
+            }
         }
 
         let nodes = if let Some(override_nodes) = &self.override_relay_nodes {
@@ -88,7 +99,16 @@ impl ScaffoldingClient {
             nodes::resolve(Some(&fetched), self.additional_relay_nodes.as_deref())
         };
 
-        *self.cached_relay_nodes.lock().await = Some(nodes.clone());
+        if nodes.is_empty() {
+            if let Some((_, stale)) = cached.as_ref() {
+                if !stale.is_empty() {
+                    log::warn!("中继节点重新解析结果为空，回退到上次缓存列表");
+                    return stale.clone();
+                }
+            }
+        } else {
+            *self.cached_relay_nodes.lock().await = Some((now, nodes.clone()));
+        }
         nodes
     }
 

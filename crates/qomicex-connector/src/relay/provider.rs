@@ -128,7 +128,21 @@ impl RelayNodeProvider {
     }
 
     /// 请求 http(s) 节点地址，返回其返回体 trim 后的实际节点；失败返回 None。
+    /// 失败重试一次（瞬时抖动常见，一次失败就丢节点会让列表缺可用中继）。
     async fn resolve_http_node(&self, node_url: &str) -> Option<String> {
+        for attempt in 0..2 {
+            match self.resolve_http_node_once(node_url).await {
+                Some(actual) => return Some(actual),
+                None if attempt == 0 => {
+                    log::warn!("解析节点 {node_url} 失败，重试一次");
+                }
+                None => return None,
+            }
+        }
+        None
+    }
+
+    async fn resolve_http_node_once(&self, node_url: &str) -> Option<String> {
         let response = self
             .client
             .get(node_url)
