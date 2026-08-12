@@ -134,4 +134,9 @@ impl TcpServer {
         self.listener.take();
         info!("TCP 服务已停止");
     }
+
+    /// 按 machine_id 定向断开其 TCP 连接（踢人；未连接/未知 machine_id → false）。
+    pub async fn disconnect_machine(&self, machine_id: &str) -> bool {
+        self.registry.disconnect_machine(machine_id).await
+    }
 }

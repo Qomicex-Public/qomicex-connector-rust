@@ -196,6 +196,33 @@ impl ScaffoldingCenter {
         on_client_disconnected_impl(&self.players, &self.players_changed_tx, Some(machine_id.to_string()));
     }
 
+    /// 踢出玩家（房主手动断开指定 guest）：
+    /// ① easytier 层关闭其全部连接（非 QML SCF 客户端不受 Scaffolding 协议控制，
+    ///    只能物理断开虚拟网络）；② 断开其 Scaffolding TCP 连接（QML guest 心跳
+    ///    失败后自动整体退出）；③ 从玩家列表移除。
+    pub async fn kick_player(&self, machine_id: &str) {
+        // ① easytier 物理断开（guest 的 easytier_id 由 player_ping 上报）
+        let easytier_id = self
+            .players
+            .read()
+            .await
+            .iter()
+            .find(|p| p.machine_id == machine_id)
+            .and_then(|p| p.easytier_id.clone());
+        if let Some(peer_id) = easytier_id {
+            if let Err(e) = self.easy_tier.lock().await.disconnect_peer(&peer_id).await {
+                warn!("踢出玩家 {machine_id} 时断开 easytier 连接失败: {e}");
+            }
+        }
+        // ② 断开 Scaffolding TCP（存在则触发断开事件）
+        if let Some(server) = self.tcp_server.lock().await.as_ref() {
+            server.disconnect_machine(machine_id).await;
+        }
+        // ③ 玩家列表移除
+        self.remove_player(machine_id);
+        info!("已踢出玩家: {machine_id}");
+    }
+
     /// 关闭房间：停止 TCP 服务器并清理本实例启动的 EasyTier 实例（对应 C# `CloseAsync`）。
     pub async fn close(&self, _ct: CancellationToken) -> Result<(), ScaffoldingError> {
         if let Some(mut server) = self.tcp_server.lock().await.take() { server.stop(); } // C# `_tcpServer?.Stop()`

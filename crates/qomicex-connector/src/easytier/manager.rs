@@ -129,6 +129,26 @@ impl EasyTierManager {
             .collect()
     }
 
+    /// 关闭与指定 easytier 节点（peer_id）的全部连接（踢人场景的物理断开）。
+    ///
+    /// 仅断开当前连接；对方若持续在线且无控制面 deny，easytier 可能自动重连
+    /// （当前 fork 无 peer 级准入黑名单）。
+    pub async fn disconnect_peer(&self, peer_id: &str) -> Result<(), ScaffoldingError> {
+        let Some(instance_id) = self.instance_id else {
+            return Ok(());
+        };
+        let Some(instance) = self.manager.instance(instance_id) else {
+            return Ok(());
+        };
+        let peer_id: easytier_core::config::PeerId = peer_id
+            .parse()
+            .map_err(|e| ScaffoldingError::EasyTierStart(format!("无效的 peer id: {peer_id}: {e}")))?;
+        instance
+            .disconnect_peer(peer_id)
+            .await
+            .map_err(|e| ScaffoldingError::EasyTierStart(format!("断开 peer 失败: {e}")))
+    }
+
     /// 运行中动态添加端口转发（管理 RPC 热更新，不重启实例）。
     ///
     /// 重启会重建虚拟网络：新实例需重连中继并重新学习路由，重试窗口内

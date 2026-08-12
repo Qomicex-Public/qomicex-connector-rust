@@ -41,6 +41,30 @@ impl ClientRegistry {
             client_machine: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
+
+    /// 按 machine_id 定向断开其 TCP 连接（踢人）：找到对应 client_id 并取消其
+    /// 连接令牌，连接任务随即退出并在清理段触发断开事件。返回是否找到连接。
+    pub(crate) async fn disconnect_machine(&self, machine_id: &str) -> bool {
+        let conn_ct = {
+            let machine = self.client_machine.lock().await;
+            let Some((client_id, _)) = machine
+                .iter()
+                .find(|(_, mid)| mid.as_str() == machine_id)
+                .map(|(cid, mid)| (cid.clone(), mid.clone()))
+            else {
+                return false;
+            };
+            drop(machine);
+            self.active_clients.lock().await.remove(&client_id)
+        };
+        match conn_ct {
+            Some(ct) => {
+                ct.cancel();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// 处理单个客户端连接（对应 C# `TcpServer.HandleClientAsync`）。
