@@ -133,12 +133,14 @@ impl ScaffoldingGuest {
     ) -> Result<(), ScaffoldingError> {
         // 字符切片（非 ASCII machine_id 安全；对应 C# `MachineId[..Math.Min(8, Length)]`）
         let hostname_suffix: String = self.machine_id.chars().take(8).collect();
+        // 管理员 → TUN 虚拟网卡（wintun）；非管理员 → no-tun（smoltcp 用户态栈）
+        let elevated = crate::util::is_elevated();
         let config = NetworkConfig {
             network_name: code.easy_tier_network_name(),
             network_secret: code.easy_tier_network_secret().to_string(),
             hostname: format!("scaffolding-mc-guest-{hostname_suffix}"),
-            no_tun: true,
-            use_smoltcp: true,
+            no_tun: !elevated,
+            use_smoltcp: !elevated,
             dhcp: true,
             relay_nodes: self.relay_nodes.clone(),
             bind_ip: crate::util::resolve_bind_ip(),

@@ -99,6 +99,41 @@ pub fn resolve_bind_ip() -> Option<String> {
     physical_ipv4_candidates().into_iter().next()
 }
 
+/// 当前进程是否以管理员/提升权限运行。
+///
+/// 决定 easytier 组网模式：管理员 → TUN 虚拟网卡（Windows wintun，性能更好、
+/// 支持 ICMP/广播等完整 IP 语义）；非管理员 → no-tun（smoltcp 用户态协议栈）。
+#[cfg(windows)]
+pub fn is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = std::mem::zeroed();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = std::mem::zeroed::<TOKEN_ELEVATION>();
+        let mut size = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_elevated() -> bool {
+    false
+}
+
 /// 虚拟/VPN 网卡名关键词（命中即视为虚拟网卡，不作为绑定候选）。
 fn is_virtual_interface(lower: &str) -> bool {
     const VIRTUAL_KEYWORDS: &[&str] = &[

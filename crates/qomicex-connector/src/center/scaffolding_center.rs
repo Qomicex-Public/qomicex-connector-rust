@@ -175,6 +175,8 @@ impl ScaffoldingCenter {
             network_name: self.room_code.easy_tier_network_name(),
             network_secret: self.room_code.easy_tier_network_secret().to_string(),
             hostname: format!("scaffolding-mc-server-{tcp_port}"),
+            // 管理员 → TUN 虚拟网卡（wintun）；非管理员保持默认 no-tun
+            no_tun: !crate::util::is_elevated(),
             ipv4: Some("10.144.144.1".to_string()),
             dhcp: false,
             tcp_whitelist: vec![tcp_port.to_string(), self.minecraft_port.to_string()],

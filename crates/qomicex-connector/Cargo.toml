@@ -24,6 +24,16 @@ easytier.workspace = true
 easytier-core.workspace = true
 easytier-proto.workspace = true
 
+# 仅 Windows 启用 easytier TUN 特性（rust-tun → wintun.dll 动态加载）：
+# 管理员模式下创建真实虚拟网卡；其他平台保持 no-tun/smoltcp 不变。
+[target.'cfg(windows)'.dependencies]
+easytier = { workspace = true, features = ["tun"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tokio.workspace = true
 tracing = "0.1"
