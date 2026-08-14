@@ -14,6 +14,11 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use easytier_proto::{
+    api::config::{ConfigPatchAction, InstanceConfigPatch, PortForwardPatch},
+    common::{PortForwardConfigPb, SocketType},
+};
+
 use crate::core::center_discovery::{discover, CenterDiscoveryResult};
 use crate::core::heartbeat::HeartbeatService;
 use crate::core::protocol_negotiator::negotiate;
@@ -170,25 +175,26 @@ impl ScaffoldingGuest {
             *self.use_port_forward.lock().await = false;
             log::info!("虚拟 IP 直连成功，无需端口转发");
         } else {
-            // 失败则动态添加 Center port-forward（管理 RPC 热更新，不重启实例：
+            // 直连失败则动态添加 Center port-forward（不重启 EasyTier，保持网络连接；
             // 重启会重建虚拟网络，重试窗口内路由未恢复 → 转发连不上 Center）
             let local_port = find_free_local_port().await;
-            log::info!(
-                "虚拟 IP 不可达，建立端口转发 127.0.0.1:{local_port} -> {}:{}",
-                center.virtual_ip,
-                center.port
-            );
             let forward = format!(
                 "tcp://127.0.0.1:{local_port}/{}:{}",
                 center.virtual_ip, center.port
             );
-            self.easy_tier.lock().await.add_port_forward(&forward).await?;
+            log::info!(
+                "虚拟 IP 不可达，动态添加端口转发 127.0.0.1:{local_port} -> {}:{}",
+                center.virtual_ip,
+                center.port
+            );
+
             {
                 let mut cfg = self.config.lock().await;
                 if let Some(c) = cfg.as_mut() {
-                    c.port_forwards.push(forward);
+                    c.port_forwards.push(forward.clone());
                 }
             }
+            self.apply_port_forward_patch(&forward).await?;
 
             if !self
                 .try_connect_with_retry("127.0.0.1", local_port, 10, ct.clone())
@@ -384,7 +390,7 @@ impl ScaffoldingGuest {
 
     /// 建立 MC 端口可连接地址，返回 (host, port)。
     /// 直连模式：无需重启，直接返回虚拟 IP + MC 端口。
-    /// 端口转发模式：重启 EasyTier 加入 MC 转发规则，返回 127.0.0.1 + 本地端口。
+    /// 端口转发模式：动态添加 MC 转发规则（不重启 EasyTier），返回 127.0.0.1 + 本地端口。
     pub async fn map_minecraft_port(
         &self,
         _ct: CancellationToken,
@@ -424,31 +430,56 @@ impl ScaffoldingGuest {
             return Ok((center.virtual_ip, mc_port));
         }
 
-        // 端口转发模式：动态添加 MC 转发（管理 RPC 热更新，不重启实例）。
-        // 重启会重建虚拟网络：Center 连接断裂后需重新学习路由，重试窗口内
-        // 重连失败（实测 BrokenPipe）；热更新保持 Center 连接不断。
+        // 端口转发模式：动态添加 MC 转发（Center 转发已在运行，只 ADD 一条新规则，不重启 EasyTier；
+        // 重启会重建虚拟网络：Center 连接断裂后需重新学习路由，重试窗口内重连失败（实测 BrokenPipe）；
+        // 热更新保持 Center 连接不断）
         let local_mc_port = find_free_local_port().await;
-        log::info!(
-            "MC 端口转发 127.0.0.1:{local_mc_port} -> {}:{mc_port}",
-            center.virtual_ip
-        );
-        let forward = format!(
+        let mc_forward = format!(
             "tcp://127.0.0.1:{local_mc_port}/{}:{mc_port}",
             center.virtual_ip
         );
-        self.easy_tier.lock().await.add_port_forward(&forward).await?;
+        log::info!(
+            "动态添加 MC 端口转发 127.0.0.1:{local_mc_port} -> {}:{mc_port}",
+            center.virtual_ip
+        );
+
         {
             let mut cfg = self.config.lock().await;
             if let Some(c) = cfg.as_mut() {
-                c.port_forwards.push(forward);
+                c.port_forwards.push(mc_forward.clone());
             }
         }
+        // EasyTier 保持运行，Center TCP 连接与心跳不断，无需重连
+        self.apply_port_forward_patch(&mc_forward).await?;
 
-        // 转发监听建立即视为成功（RPC 返回 Ok 表示 apply_port_forwards 已生效）；
+        // 转发监听建立即视为成功（patch 返回 Ok 表示 apply_port_forwards 已生效）；
         // 不能用 try_connect 验证——MC 转发目标是对端 MC 服务器，非 SCF 协议端点。
         *self.minecraft_host.lock().await = Some("127.0.0.1".into());
         *self.minecraft_port.lock().await = Some(local_mc_port);
         Ok(("127.0.0.1".to_string(), local_mc_port))
+    }
+
+    /// 动态添加一条 TCP 端口转发规则到运行中的 EasyTier 实例。
+    ///
+    /// 通过 `apply_config_patch`（ADD 增量）实现，实例不重启、网络连接不断开。
+    /// 格式：`tcp://127.0.0.1:LOCAL/REMOTE:PORT`。
+    async fn apply_port_forward_patch(&self, forward: &str) -> Result<(), ScaffoldingError> {
+        let (bind_addr, dst_addr) = parse_forward_addrs(forward)?;
+        self.easy_tier
+            .lock()
+            .await
+            .apply_config_patch(InstanceConfigPatch {
+                port_forwards: vec![PortForwardPatch {
+                    action: ConfigPatchAction::Add as i32,
+                    cfg: Some(PortForwardConfigPb {
+                        bind_addr: Some(bind_addr.into()),
+                        dst_addr: Some(dst_addr.into()),
+                        socket_type: SocketType::Tcp as i32,
+                    }),
+                }],
+                ..Default::default()
+            })
+            .await
     }
 
     /// 获取玩家列表（`c:player_profiles_list`）。
@@ -666,6 +697,26 @@ fn split_key(key: &str) -> Result<(String, String), ScaffoldingError> {
             "无效的协议键格式: {key}"
         ))),
     }
+}
+
+/// 从端口转发规则解析 (bind_addr, dst_addr)：`tcp://127.0.0.1:LOCAL/REMOTE:PORT`。
+fn parse_forward_addrs(
+    forward: &str,
+) -> Result<(std::net::SocketAddr, std::net::SocketAddr), ScaffoldingError> {
+    let invalid = |msg: String| ScaffoldingError::Protocol(msg);
+    let (_, rest) = forward
+        .split_once("://")
+        .ok_or_else(|| invalid(format!("无效的端口转发格式: {forward}")))?;
+    let (bind, dst) = rest
+        .split_once('/')
+        .ok_or_else(|| invalid(format!("无效的端口转发格式: {forward}")))?;
+    let bind_addr: std::net::SocketAddr = bind
+        .parse()
+        .map_err(|_| invalid(format!("无效的端口转发绑定地址: {bind}")))?;
+    let dst_addr: std::net::SocketAddr = dst
+        .parse()
+        .map_err(|_| invalid(format!("无效的端口转发目标地址: {dst}")))?;
+    Ok((bind_addr, dst_addr))
 }
 
 /// 获取本地空闲端口：绑定 `127.0.0.1:0` 取端口后立即释放。
