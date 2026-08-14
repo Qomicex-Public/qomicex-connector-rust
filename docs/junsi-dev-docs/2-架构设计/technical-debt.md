@@ -69,6 +69,7 @@
 - **覆盖官方公共节点全部协议端口**：tcp/udp 11010、wss 11011/11012、wg 11013 —— 原版 ET 中继节点可正常连接。
 - **`socks5` 必须保留**：`gateway_enabled = cfg!(feature = "socks5")`，缺失时 `port_forward_adapter` 不启动 → 端口转发模式 10061 拒绝连接。
 - **注意**：启用 faketcp 后 Windows 链接需要 `Packet.lib`（easytier build.rs 输出相对 LIBPATH `easytier/third_party/x86_64/`，按 rustc CWD=workspace 根解析）→ 已把 Packet.lib/Packet.dll 放入工作区根 `easytier/third_party/x86_64/`（勿删）。
+- **Windows ARM64**：easytier 的 windivert 依赖被 `cfg(all(windows, any(x86_64, x86)))` 排除，aarch64 不编译 WinDivert（fork 的 `third_party/arm64/WinDivert64.sys` 是纯文本占位符，内容 "WinDivert doesn't support aarch64"）→ ARM64 faketcp 走 pnet/npcAP，UDP 广播捕获走 raw socket，运行时仅需 arm64 版 `Packet.dll`（已由 release.yml windows-arm64 job 打包）。x64 上 WinDivert 也仅是可选后端，缺 `WinDivert64.sys` 时自动 fallback pnet。
 - 未启用（可追加）：magic-dns（域名解析）、icmp-proxy（ping 代理）——均与中继节点互通无关。
 
 ### 3.3 P2P 打洞/中继数据面未真实验证 — P1（部分验证）
