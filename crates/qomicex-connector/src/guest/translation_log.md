@@ -74,14 +74,14 @@
 | `event Action? ConnectionLost` | `connection_lost_tx: watch::Sender<bool>` + `connection_lost_rx()` | watch channel 订阅替代事件 |
 | `NegotiatedProtocols` 属性 | `negotiated_protocols()` → `RwLock` 读 clone | async |
 | `MinecraftHost / MinecraftPort` 属性 | `minecraft_host()` / `minecraft_port()` | async getter |
-| `ConnectAsync(code, ct)` | `connect(&self, code, ct)` | 建 config → start EasyTier → discover → 直连或转发重启 → 心跳；见决策 1 |
+| `ConnectAsync(code, ct)` | `connect(&self, code, ct)` | 建 config → start EasyTier → discover → 直连或动态转发 → 心跳；见决策 1、9 |
 | `TryConnectOnceAsync` | `try_connect_once` | 超时包 connect，ping/协商串行在外；见决策 2 |
 | `TryConnectWithRetryAsync` | `try_connect_with_retry` | 10 次 × 3s 超时，间隔 2s |
 | `SendPlayerPing(ct)` | `send_player_ping` | 未连接 → 发送 `true`；协商含 `c:player_easytier_id` 才填 easytier_id；锁逐一获取（tcp → negotiated → easy_tier → tcp），见决策 3 |
 | `NegotiateProtocols(ct)` | `negotiate_protocols` | 标准 6 协议 + 自定义，`\0` 连接；成功才写 `negotiated` |
 | `PingAsync` | `ping` | body `[0x42]`，返回 `is_success()` |
 | `GetServerPortAsync` | `get_server_port` | 32..64 → "MC 服务器未启动"；非成功 → 失败；body 2 字节大端 → u16；长度非法补 Protocol 错误（C# 会抛 ArgumentException） |
-| `MapMinecraftPortAsync` | `map_minecraft_port` | 直连模式直接缓存返回；转发模式停心跳 → 断开 → 停 EasyTier → 追加 MC 转发 → 重连 → 重启心跳；见决策 4 |
+| `MapMinecraftPortAsync` | `map_minecraft_port` | 直连模式直接缓存返回；转发模式动态 ADD MC 转发（不重启 EasyTier，Center TCP 与心跳不断）；见决策 4、9 |
 | `GetPlayerListAsync` | `get_player_list` | `serde_json::Value` 数组解析；`kind == "HOST"` → Host，否则 Guest |
 | `SendAsync(request, ct)` | `send_raw` | 透传 tcp.send |
 | `SendAsync<TResp>(key, ct)` | `send_json` | split_key 拆 ns/type；空 body；非成功 → Protocol 错误；JSON 反序列化 |
@@ -89,12 +89,12 @@
 | `LeaveAsync(ct)` | `leave` | 停心跳 → 断开 → 停 EasyTier |
 | `StartAsync(ct)` 心跳 | `start_heartbeat` | HeartbeatService 回调不调用 self 方法，全部克隆 Arc，避免锁重入；见决策 5 |
 | `SplitKey` | `split_key` | 私有函数；无 `:` → Protocol 错误 |
-| `ParseLocalPortFromForward` | `parse_local_port_from_forward` | 取 `://` 后首个 `/` 前最后 `:` 后数字 |
+| `ParseLocalPortFromForward` | `parse_forward_addrs` | 返回 `(bind_addr, dst_addr)` 供 `apply_config_patch` 构造 `PortForwardConfigPb`；原 C# 仅取本地端口（已随决策 9 变更） |
 | `FindFreeLocalPort()` | `find_free_local_port` | `TcpListener::bind("127.0.0.1:0")` 取端口后立即 drop |
 
 ## 偏差 / 决策记录
 
-1. **EasyTier 重启（ConnectAsync 转发分支）锁顺序**：先 `easy_tier.stop()`（块内释放），再改 `config.port_forwards`（块内释放），最后克隆 config 并 `start`。全程一次只持一个锁，杜绝锁重入死锁。
+1. **锁顺序（ConnectAsync 转发分支，原重启方案已废弃，见决策 9）**：历史版本先 `easy_tier.stop()`（块内释放），再改 `config.port_forwards`（块内释放），最后克隆 config 并 `start`。全程一次只持一个锁，杜绝锁重入死锁。
 2. **TryConnectOnceAsync 死锁规避**：C# 在同一方法内连续 Connect → SendPlayerPing → NegotiateProtocols；Rust 版将 `tcp.lock().await.connect(...)` 整体放入 `tokio::time::timeout`（守卫随语句结束释放），ping / 协商在闭包外串行调用，每次各自短暂持锁。
 3. **SendPlayerPing 锁顺序**：先查 `tcp.is_connected()`（锁即释放）→ 读 `negotiated`（释放）→ 取 `easy_tier.node_id()`（释放）→ 最后 `tcp.send`。禁止同时持有两个锁。
 4. **heartbeat_ct 字段**：新增 `tokio::sync::Mutex<Option<CancellationToken>>` 记录心跳取消令牌；`stop_heartbeat()` 取出并 cancel，替代 C# `_heartbeatService?.Dispose()`。
@@ -102,6 +102,13 @@
 6. **`connection_lost` 触发语义**：C# 用 `_connectionLostFired` 防重复触发；Rust 用 `watch::Sender::send(true)`（重复 send 幂等，值不变不唤醒），行为等价且更简单。
 7. **心跳 body 构造**：用 `serde_json::json!` 直接构造（`easytier_id` 为 null 或字符串，`kind` 为 null），与 C# `PlayerProfileEntry` 序列化结果一致（System.Text.Json 默认序列化 null）。
 8. **`GetServerPortAsync` 长度非法分支**：C# `ReadUInt16BigEndian` 对非 2 字节抛异常；Rust 补 `Protocol("服务器端口响应长度非法")` 错误。
+9. **端口转发改为运行时 patch（替代重启，2026-08-11）**：原方案在直连失败 / `map_minecraft_port` 时 stop/start 重启 EasyTier（P2P 连接重建、Center TCP 断开重连、心跳停启）。现改为 `EasyTierManager::apply_config_patch` 动态 ADD 端口转发规则：
+   - 底层 `easytier_core::management::apply_config_patch`（进程内直接调用，无 RPC）；
+   - 实例保持运行，网络连接、Center TCP、心跳全程不断；`map_minecraft_port` 不再调用 `stop_heartbeat`/`tcp.disconnect`/`stop`/`start`/重连；
+   - `self.config.port_forwards` 存储仍同步更新（增量 push），保持配置一致；
+   - `ct` 参数在 `map_minecraft_port` 中不再使用，保留签名兼容改为 `_ct`；
+   - 新增 `apply_port_forward_patch` 私有辅助 + `parse_forward_addrs`（替代 `parse_local_port_from_forward`）；
+   - 依赖前提：`management` + `proxy-smoltcp-stack` feature（workspace 已启用）；实例须处于 Running。
 
 ## 未覆盖（UNMAPPED 汇总）
 

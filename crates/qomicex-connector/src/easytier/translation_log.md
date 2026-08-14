@@ -16,6 +16,7 @@
 | `StartAsync(config, ct)` | `start(&mut self, config: &NetworkConfig) -> Result<(), ScaffoldingError>`（30s 超时 → `EasyTierTimeout("EasyTier 启动超时 (30s)")`；成功 sleep 2s 对齐 2000ms 缓冲） |
 | `StopAsync(ct)` | `stop(&mut self) -> Result<(), ScaffoldingError>`（`delete_network_instances`，清空缓存；异常仅 warn 不传播，对齐 C# catch） |
 | `GetNodesAsync(ct)` | `get_nodes(&self) -> Vec<EasyTierNode>`（`route_snapshots()` 映射；无需 CLI） |
+| —（C# 无对应；新增能力） | `apply_config_patch(&self, patch: InstanceConfigPatch) -> Result<(), ScaffoldingError>` | 进程内直接调 `easytier_core::management::apply_config_patch`，运行时覆盖配置，**不重启实例、不断开网络连接**；实例必须处于运行状态（见下方"动态配置修改"） |
 | `Dispose()` | Drop 时由 InstanceManager 自动回收（未实现 Drop，无进程需杀） |
 
 ## TomlConfig 构建决策（BuildArgs 映射）
@@ -59,3 +60,12 @@
 - DHCP 节点（Guest）的虚拟 IP 取 `node_snapshot().ipv4_addr`；Host 固定 IP 直接用 config.ipv4（去 /24），与 C# 解析日志结果一致。
 - C# `VirtualIp`/`NodeId` 在启动前重置为 null；Rust `start()` 开头同步重置缓存。
 - 超时轮询：C# 用 TaskCompletionSource 事件驱动；Rust 改为 500ms 轮询 `is_ready()`（≤30s），等价且为 spike 指定方案。
+
+## 动态配置修改（apply_config_patch）
+
+- **底层机制**：`easytier_core::management::apply_config_patch(instance: &Arc<CoreInstance<H>>, patch: InstanceConfigPatch)` 为公开 API（`management` feature 下导出）。语义：以启动时的共享 `TomlConfig` 为基座，将 `InstanceConfigPatch` 作为运行时覆盖打上去（先 `detached_snapshot()` 拷贝候选 → 逐项 patch → 校验 → `replace_from_snapshot` 提交回共享 TomlConfig → 同步运行时配置），实例**不重启**。
+- **前置条件**：实例状态必须为 `Running`（`start()` 轮询就绪之后才能调），否则报错 "instance is not ready"。
+- **可 patch 字段**：hostname、ipv4/ipv6、port_forwards、acl、proxy_networks、routes、exit_nodes、mapped_listeners、connectors、ipv6_public_addr_*、disable_relay_data。
+- **集合字段为增量语义**：`port_forwards` 等按 `ConfigPatchAction::Add/Remove/Clear` 增量生效（不是全量替换）。底层 `PortForwardAdapter::reload` 对每条规则做 diff：保留仍在的、新增缺失的、取消多余的任务（`easytier-core/src/gateway/port_forward.rs`）。
+- **feature 前提**：port_forward patch 要求编译 `proxy-smoltcp-stack`（workspace `easytier-core` 已启用），否则校验直接拒绝。
+- **本仓库用途**：guest 端在 `connect()` / `map_minecraft_port()` 中动态 ADD 端口转发规则，替代原先 stop/start 重启 EasyTier 的方案（见 `src/guest/translation_log.md` 决策 9）。
