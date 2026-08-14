@@ -17,6 +17,9 @@ pub enum ScaffoldingError {
     CenterConnection(String),
     /// 协议序列化 / 状态码错误。
     Protocol(String),
+    /// 目标协议未在 `c:protocols` 协商结果中（房主不支持该扩展协议）：
+    /// 兼容模式下不发送请求，直接返回本错误，由调用方按"功能不可用"降级处理。
+    ProtocolNotNegotiated(String),
     /// 心跳超时。
     HeartbeatTimeout(String),
 }
@@ -31,6 +34,7 @@ impl fmt::Display for ScaffoldingError {
             | Self::CenterNotFound(msg)
             | Self::CenterConnection(msg)
             | Self::Protocol(msg)
+            | Self::ProtocolNotNegotiated(msg)
             | Self::HeartbeatTimeout(msg) => write!(f, "{msg}"),
         }
     }

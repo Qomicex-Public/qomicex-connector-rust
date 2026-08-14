@@ -549,10 +549,13 @@ impl ScaffoldingGuest {
     }
 
     /// 调用无入参的自定义协议，响应体按 JSON 反序列化为 `TResp`。
+    /// 兼容模式：若 `key` 未在 `c:protocols` 协商结果中（房主不支持），**不发包**，
+    /// 直接返回 [`ScaffoldingError::ProtocolNotNegotiated`]，由调用方按功能不可用降级。
     pub async fn send_json<TResp: DeserializeOwned>(
         &self,
         key: &str,
     ) -> Result<TResp, ScaffoldingError> {
+        self.ensure_negotiated(key).await?;
         let (namespace, request_type) = split_key(key)?;
         let response = self
             .tcp
@@ -575,11 +578,13 @@ impl ScaffoldingGuest {
     }
 
     /// 调用带入参的自定义协议：payload 以 JSON 编码为请求体，响应体按 JSON 反序列化为 `TResp`。
+    /// 兼容模式：同 [`send_json`]，未协商的协议不发包，返回 [`ScaffoldingError::ProtocolNotNegotiated`]。
     pub async fn send_json_req<TReq: Serialize, TResp: DeserializeOwned>(
         &self,
         key: &str,
         payload: &TReq,
     ) -> Result<TResp, ScaffoldingError> {
+        self.ensure_negotiated(key).await?;
         let (namespace, request_type) = split_key(key)?;
         let body = serde_json::to_vec(payload)
             .map_err(|e| ScaffoldingError::Protocol(e.to_string()))?;
@@ -601,6 +606,24 @@ impl ScaffoldingGuest {
         }
         serde_json::from_slice(&response.body)
             .map_err(|e| ScaffoldingError::Protocol(e.to_string()))
+    }
+
+    /// 兼容模式检查：协议键必须出现在 `c:protocols` 协商结果中。
+    /// 未协商（房主不支持）→ 不发包，返回 `ProtocolNotNegotiated`。
+    async fn ensure_negotiated(&self, key: &str) -> Result<(), ScaffoldingError> {
+        let negotiated = self.negotiated.read().await;
+        if negotiated.iter().any(|p| p == key) {
+            Ok(())
+        } else {
+            Err(ScaffoldingError::ProtocolNotNegotiated(format!(
+                "房主不支持协议 {key}（协商结果: {}）",
+                if negotiated.is_empty() {
+                    "空".to_string()
+                } else {
+                    negotiated.join(", ")
+                }
+            )))
+        }
     }
 
     /// 退出房间：停止心跳、断开连接并停止本实例启动的 EasyTier。
@@ -730,4 +753,72 @@ async fn find_free_local_port() -> u16 {
         .port();
     drop(listener);
     port
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn guest_with(negotiated: Vec<&str>) -> ScaffoldingGuest {
+        let g = ScaffoldingGuest::new("TestGuest".into(), "m1".into(), "qml".into(), vec![], None);
+        *g.negotiated.write().await = negotiated.iter().map(|s| s.to_string()).collect();
+        g
+    }
+
+    #[tokio::test]
+    async fn ensure_negotiated_accepts_negotiated_key() {
+        let g = guest_with(vec!["c:ping", "qml:game_info"]).await;
+        assert!(g.ensure_negotiated("qml:game_info").await.is_ok());
+        assert!(g.ensure_negotiated("c:ping").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ensure_negotiated_rejects_unnegotiated_key() {
+        // 房主只支持标准协议（其他启动器场景）：qml: 协议不在协商结果中
+        let g = guest_with(vec!["c:ping", "c:protocols", "c:server_port"]).await;
+        let err = g.ensure_negotiated("qml:game_info").await.unwrap_err();
+        assert!(matches!(err, ScaffoldingError::ProtocolNotNegotiated(_)));
+        assert!(g.ensure_negotiated("qml:player_icons").await.is_err());
+        assert!(g.ensure_negotiated("qml:player_leave").await.is_err());
+        assert!(g.ensure_negotiated("qml:game_mods").await.is_err());
+        // 标准协议仍可用
+        assert!(g.ensure_negotiated("c:server_port").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ensure_negotiated_rejects_when_empty() {
+        let g = guest_with(vec![]).await;
+        let err = g.ensure_negotiated("qml:game_info").await.unwrap_err();
+        assert!(matches!(err, ScaffoldingError::ProtocolNotNegotiated(_)));
+    }
+
+    #[tokio::test]
+    async fn send_json_short_circuits_unnegotiated_key() {
+        // 房主不支持 qml: 协议（其他启动器）：send_json 应短路返回，不触达 TCP
+        let g = guest_with(vec!["c:ping", "c:protocols"]).await;
+        let err = g
+            .send_json::<serde_json::Value>("qml:game_info")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ScaffoldingError::ProtocolNotNegotiated(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_json_req_short_circuits_unnegotiated_key() {
+        let g = guest_with(vec!["c:ping"]).await;
+        let err = g
+            .send_json_req::<serde_json::Value, serde_json::Value>(
+                "qml:player_leave",
+                &serde_json::json!({ "machineId": "m1" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ScaffoldingError::ProtocolNotNegotiated(_)
+        ));
+    }
 }
