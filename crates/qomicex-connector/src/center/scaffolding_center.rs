@@ -30,11 +30,41 @@ type PlayerList = Arc<tokio::sync::RwLock<Vec<PlayerInfo>>>;
 /// 已踢玩家黑名单（machine_id → 踢出时解析到的 easytier peer id）。
 type KickedSet = Arc<tokio::sync::RwLock<HashMap<String, KickedInfo>>>;
 
+/// 房主对已踢玩家重连请求的审核动作（弹窗三选）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KickReviewAction {
+    /// 允许重新加入：从黑名单移除，下一次 player_ping 正常入列。
+    Allow,
+    /// 拒绝：维持踢出，下次重连可再次询问。
+    Reject,
+    /// 拒绝且不再提示：后续重连静默拒绝，不再弹窗。
+    RejectSilent,
+}
+
+/// 待房主审核的重连请求（`/connector/status` 暴露给前端弹窗）。
+#[derive(Debug, Clone, Default)]
+pub struct KickReview {
+    /// 申请重连的玩家机器标识。
+    pub machine_id: String,
+    /// 玩家名。
+    pub name: String,
+    /// 启动器厂商。
+    pub vendor: String,
+}
+
 /// 已踢玩家记录：保留踢出时解析到的 easytier peer id，供再次 ping 时重复断开。
 #[derive(Debug, Clone, Default)]
 struct KickedInfo {
     /// 踢出时解析到的 easytier peer（节点）id；`None` = 无法定位网络层（第三方 guest）。
     easytier_peer: Option<String>,
+    /// 最近一次重连请求的玩家名（弹窗展示）。
+    name: String,
+    /// 最近一次重连请求的厂商（弹窗展示）。
+    vendor: String,
+    /// 重连审核中（弹窗已弹出，等待房主决定）。
+    pending: bool,
+    /// 拒绝且不再提示：后续重连静默拒绝，不弹窗。
+    prompt_disabled: bool,
 }
 
 /// 联机中心。
@@ -157,27 +187,52 @@ impl ScaffoldingCenter {
             Arc::new(ProtocolsProtocol::new(advertised_keys)),
             Arc::new(ServerPortProtocol::new(self.minecraft_port)),
             Arc::new(PlayerPingProtocol::new(move |info| {
-                // 已踢玩家：拒绝入列（回调返回 false → 响应状态 255，且不刷新心跳），
-                // 并再次物理断开（SCF TCP + easytier），防 re-ping 回归。
+                // 已踢玩家：进入重连审核状态机。
                 if is_kicked(&kicked, &info.machine_id) {
                     let machine_id = info.machine_id.clone();
+                    // ① 拒绝且不再提示 → 静默拒绝（255 + 断开 SCF TCP + easytier），不弹窗
+                    if kicked_read(&kicked, &machine_id)
+                        .map(|k| k.prompt_disabled)
+                        .unwrap_or(false)
+                    {
+                        let peer = kicked_read(&kicked, &machine_id)
+                            .and_then(|k| k.easytier_peer.clone());
+                        let tcp_server = tcp_server.clone();
+                        let easy_tier = easy_tier.clone();
+                        tokio::spawn(async move {
+                            if let Some(server) = tcp_server.lock().await.as_ref() {
+                                if !server.disconnect_machine(&machine_id).await {
+                                    debug!("已踢玩家 {machine_id} 的 SCF TCP 连接未找到（可能已断开）");
+                                }
+                            }
+                            if let Some(peer) = peer {
+                                if let Err(e) = easy_tier.lock().await.disconnect_peer(&peer).await {
+                                    warn!("已踢玩家 {machine_id} 再次断开 easytier 失败: {e}");
+                                }
+                            }
+                        });
+                        return false;
+                    }
+                    // ② 首次重连请求：置 pending（前端轮询 status 弹窗询问房主），保持 SCF TCP
+                    //    连接（响应 0 刷新心跳）；重复 ping 不再重复弹窗。easytier 持续断开（数据面封禁）。
+                    if !kicked_read(&kicked, &machine_id)
+                        .map(|k| k.pending)
+                        .unwrap_or(false)
+                    {
+                        mark_kick_pending(&kicked, &machine_id, &info.name, &info.vendor);
+                        info!("玩家 {machine_id} 申请重新加入，等待房主决定");
+                    }
                     let peer = kicked_read(&kicked, &machine_id)
                         .and_then(|k| k.easytier_peer.clone());
-                    let tcp_server = tcp_server.clone();
                     let easy_tier = easy_tier.clone();
                     tokio::spawn(async move {
-                        if let Some(server) = tcp_server.lock().await.as_ref() {
-                            if !server.disconnect_machine(&machine_id).await {
-                                debug!("已踢玩家 {machine_id} 的 SCF TCP 连接未找到（可能已断开）");
-                            }
-                        }
                         if let Some(peer) = peer {
                             if let Err(e) = easy_tier.lock().await.disconnect_peer(&peer).await {
-                                warn!("已踢玩家 {machine_id} 再次断开 easytier 失败: {e}");
+                                warn!("已踢玩家 {machine_id} 等待审核期间断开 easytier 失败: {e}");
                             }
                         }
                     });
-                    return false;
+                    return true; // 0：保持连接等待决定（不刷新入列逻辑，player 不入列）
                 }
                 on_player_ping_impl(&players_ping, &tx, info);
                 true
@@ -242,19 +297,19 @@ impl ScaffoldingCenter {
     /// 踢出玩家（房主手动断开指定 guest）：
     /// ① 解析其 easytier peer 并物理断开（优先已上报 easytier_id，否则 hostname / SCF 源虚拟 IP
     ///    反查；非 QML SCF 客户端不受 Scaffolding 协议控制，只能物理断开虚拟网络）；
-    /// ② 记入已踢黑名单（后续 re-ping 拒绝入列并重复断开）；③ 断开其 Scaffolding TCP
-    /// （QML guest 心跳失败后自动整体退出）；④ 从玩家列表移除。
+    /// ② 记入已踢黑名单（后续 re-ping 进入重连审核，见 [`Self::pending_kick_reviews`]）；
+    /// ③ 断开其 Scaffolding TCP（QML guest 心跳失败后自动整体退出）；④ 从玩家列表移除。
     pub async fn kick_player(&self, machine_id: &str) {
         // ① 解析 easytier peer id 并物理断开
-        let reported_easytier_id = self
+        let player = self
             .players
             .read()
             .await
             .iter()
             .find(|p| p.machine_id == machine_id)
-            .and_then(|p| p.easytier_id.clone());
-        let peer_id = match reported_easytier_id.as_deref() {
-            Some(id) => Some(id.to_string()),
+            .cloned();
+        let peer_id = match player.as_ref().and_then(|p| p.easytier_id.clone()) {
+            Some(id) => Some(id),
             None => self.resolve_guest_easytier_peer(machine_id).await,
         };
         if let Some(peer_id) = &peer_id {
@@ -271,6 +326,10 @@ impl ScaffoldingCenter {
             machine_id.to_string(),
             KickedInfo {
                 easytier_peer: peer_id,
+                name: player.as_ref().map(|p| p.name.clone()).unwrap_or_default(),
+                vendor: player.as_ref().map(|p| p.vendor.clone()).unwrap_or_default(),
+                pending: false,
+                prompt_disabled: false,
             },
         );
         // ③ 断开 Scaffolding TCP（存在则触发断开事件）
@@ -282,6 +341,69 @@ impl ScaffoldingCenter {
         // ④ 玩家列表移除
         self.remove_player(machine_id);
         info!("已踢出玩家: {machine_id}");
+    }
+
+    /// 待房主审核的重连请求列表（`pending` 标记的已踢玩家；供 `/connector/status` 暴露给前端弹窗）。
+    pub async fn pending_kick_reviews(&self) -> Vec<KickReview> {
+        let guard = self.kicked.read().await;
+        guard
+            .iter()
+            .filter(|(_, k)| k.pending)
+            .map(|(mid, k)| KickReview {
+                machine_id: mid.clone(),
+                name: k.name.clone(),
+                vendor: k.vendor.clone(),
+            })
+            .collect()
+    }
+
+    /// 处理房主对重连请求的决定（弹窗三选）。
+    ///
+    /// - [`KickReviewAction::Allow`]：从黑名单移除，下一次 player_ping 正常入列。
+    /// - [`KickReviewAction::Reject`]：维持踢出（pending 复位），断开其等待中的连接。
+    /// - [`KickReviewAction::RejectSilent`]：同上，并置 `prompt_disabled`（后续重连不再弹窗）。
+    pub async fn decide_kick_review(&self, machine_id: &str, action: KickReviewAction) {
+        match action {
+            KickReviewAction::Allow => {
+                self.kicked.write().await.remove(machine_id);
+                info!("房主允许玩家 {machine_id} 重新加入");
+            }
+            KickReviewAction::Reject => {
+                if let Some(k) = self.kicked.write().await.get_mut(machine_id) {
+                    k.pending = false;
+                }
+                self.drop_kicked_connection(machine_id).await;
+                info!("房主拒绝玩家 {machine_id} 重新加入");
+            }
+            KickReviewAction::RejectSilent => {
+                if let Some(k) = self.kicked.write().await.get_mut(machine_id) {
+                    k.pending = false;
+                    k.prompt_disabled = true;
+                }
+                self.drop_kicked_connection(machine_id).await;
+                info!("房主拒绝玩家 {machine_id} 重新加入（不再提示）");
+            }
+        }
+    }
+
+    /// 断开已踢玩家的 SCF TCP 与 easytier（拒绝决定后的收尾）。
+    async fn drop_kicked_connection(&self, machine_id: &str) {
+        if let Some(server) = self.tcp_server.lock().await.as_ref() {
+            if !server.disconnect_machine(machine_id).await {
+                debug!("玩家 {machine_id} 的 SCF TCP 连接未找到（可能已断开）");
+            }
+        }
+        let peer = self
+            .kicked
+            .read()
+            .await
+            .get(machine_id)
+            .and_then(|k| k.easytier_peer.clone());
+        if let Some(peer) = peer {
+            if let Err(e) = self.easy_tier.lock().await.disconnect_peer(&peer).await {
+                warn!("拒绝玩家 {machine_id} 时断开 easytier 失败: {e}");
+            }
+        }
     }
 
     /// 解析 guest 的 easytier peer id（未上报 easytier_id 时的兜底反查）：
@@ -398,6 +520,22 @@ fn kicked_read(kicked: &KickedSet, machine_id: &str) -> Option<KickedInfo> {
     None
 }
 
+/// 置为待审核（同步回调内使用；写锁重试对齐 `with_players_write`）。
+fn mark_kick_pending(kicked: &KickedSet, machine_id: &str, name: &str, vendor: &str) {
+    for _ in 0..LOCK_RETRY_LIMIT {
+        if let Ok(mut guard) = kicked.try_write() {
+            if let Some(info) = guard.get_mut(machine_id) {
+                info.pending = true;
+                info.name = name.to_string();
+                info.vendor = vendor.to_string();
+            }
+            return;
+        }
+        std::thread::yield_now();
+    }
+    warn!("已踢名单写锁等待超时，pending 更新已跳过");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,7 +559,7 @@ mod tests {
         kicked
             .write()
             .await
-            .insert("k1".into(), KickedInfo { easytier_peer: None });
+            .insert("k1".into(), KickedInfo { easytier_peer: None, ..Default::default() });
 
         // 黑名单生效：被踢 machine_id 判定为已踢，未踢的不受影响
         assert!(is_kicked(&kicked, "k1"));
@@ -448,5 +586,46 @@ mod tests {
             })
             .await;
         assert_eq!(accepted.status, 0);
+    }
+
+    #[tokio::test]
+    async fn kick_review_state_machine() {
+        let kicked: KickedSet = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        kicked
+            .write()
+            .await
+            .insert("k1".into(), KickedInfo { easytier_peer: None, ..Default::default() });
+
+        // 重连请求 → pending（弹窗），名字/厂商记录
+        mark_kick_pending(&kicked, "k1", "Alex", "third-party");
+        let reviews = kicked.read().await;
+        assert!(reviews.get("k1").unwrap().pending);
+        assert_eq!(reviews.get("k1").unwrap().name, "Alex");
+        assert_eq!(reviews.get("k1").unwrap().vendor, "third-party");
+        drop(reviews);
+
+        // 允许 → 移除黑名单
+        {
+            let mut g = kicked.write().await;
+            g.remove("k1");
+        }
+        assert!(!is_kicked(&kicked, "k1"));
+
+        // 拒绝且不再提示 → prompt_disabled
+        kicked
+            .write()
+            .await
+            .insert("k2".into(), KickedInfo { easytier_peer: None, ..Default::default() });
+        mark_kick_pending(&kicked, "k2", "Bob", "third-party");
+        {
+            let mut g = kicked.write().await;
+            if let Some(k) = g.get_mut("k2") {
+                k.pending = false;
+                k.prompt_disabled = true;
+            }
+        }
+        let k2 = kicked.read().await.get("k2").cloned().unwrap();
+        assert!(k2.prompt_disabled);
+        assert!(!k2.pending);
     }
 }
