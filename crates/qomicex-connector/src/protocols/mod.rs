@@ -122,13 +122,16 @@ impl ProtocolHandler for ServerPortProtocol {
 }
 
 /// 协议 `c:player_ping`：解析玩家心跳 JSON 并触发回调。
+///
+/// 回调返回 `true` = 接受该玩家（响应状态 0）；返回 `false` = 拒绝（如已被房主踢出，
+/// 响应状态 255 且**不刷新心跳**——被拒客户端仍会被 15s 心跳窗口剔除，双重兜底）。
 pub struct PlayerPingProtocol {
-    on_player_ping: Box<dyn Fn(PlayerInfo) + Send + Sync>,
+    on_player_ping: Box<dyn Fn(PlayerInfo) -> bool + Send + Sync>,
 }
 
 impl PlayerPingProtocol {
     /// 以玩家回调构造（对应 C# `PlayerPingProtocol(Action<PlayerInfo>)`）。
-    pub fn new(on_player_ping: impl Fn(PlayerInfo) + Send + Sync + 'static) -> Self {
+    pub fn new(on_player_ping: impl Fn(PlayerInfo) -> bool + Send + Sync + 'static) -> Self {
         Self {
             on_player_ping: Box::new(on_player_ping),
         }
@@ -147,10 +150,16 @@ impl ProtocolHandler for PlayerPingProtocol {
         Box::pin(async move {
             match parse_player_info(&request.body) {
                 Ok(info) => {
-                    (self.on_player_ping)(info);
-                    ProtocolResponse {
-                        status: 0,
-                        body: Vec::new(),
+                    if (self.on_player_ping)(info) {
+                        ProtocolResponse {
+                            status: 0,
+                            body: Vec::new(),
+                        }
+                    } else {
+                        ProtocolResponse {
+                            status: 255,
+                            body: "玩家已被房主踢出".as_bytes().to_vec(),
+                        }
                     }
                 }
                 Err(e) => error_response(format!("玩家心跳解析失败: {e}")),
@@ -394,6 +403,7 @@ mod tests {
         let captured_clone = captured.clone();
         let handler = PlayerPingProtocol::new(move |info| {
             *captured_clone.lock().unwrap() = Some(info);
+            true
         });
 
         let json = json!({
@@ -419,6 +429,26 @@ mod tests {
         assert_eq!(info.machine_id, "m123");
         assert_eq!(info.vendor, "TestVendor");
         assert_eq!(info.easytier_id, None);
+    }
+
+    #[tokio::test]
+    async fn player_ping_protocol_rejected_callback_returns_error_status() {
+        // 已被房主踢出的玩家：回调返回 false → 状态 255（且不刷新心跳，兜底剔除）
+        let handler = PlayerPingProtocol::new(|_| false);
+        let json = json!({
+            "name": "KickedPlayer",
+            "machine_id": "k1",
+            "vendor": "TestVendor"
+        });
+        let response = handler
+            .handle(&ProtocolRequest {
+                namespace: "c".into(),
+                request_type: "player_ping".into(),
+                body: serde_json::to_vec(&json).expect("构造测试体失败"),
+            })
+            .await;
+
+        assert_eq!(response.status, 255);
     }
 
     #[tokio::test]

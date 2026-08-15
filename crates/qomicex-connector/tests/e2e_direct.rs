@@ -119,6 +119,7 @@ async fn e2e_direct_full_scf_flow() {
                 info.kind = PlayerKind::Guest;
                 p.push(info);
             }
+            true
         })),
         Arc::new(PlayerProfilesListProtocol::new(move || players_list.lock().unwrap().clone())),
     ];

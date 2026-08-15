@@ -21,7 +21,7 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 连接管理共享状态（对应 C# `_lastHeartbeat` / `_activeClients` / `_clientIdToMachineId`）。
 ///
-/// 三个并发字典以 `Arc<tokio::sync::Mutex>` 包装，供 accept 循环、心跳循环与各连接任务共享。
+/// 四个并发字典以 `Arc<tokio::sync::Mutex>` 包装，供 accept 循环、心跳循环与各连接任务共享。
 #[derive(Clone)]
 pub(crate) struct ClientRegistry {
     /// 最近心跳时间（client_id → Instant）。
@@ -30,6 +30,8 @@ pub(crate) struct ClientRegistry {
     active_clients: Arc<tokio::sync::Mutex<HashMap<String, CancellationToken>>>,
     /// 客户端映射（client_id → machine_id，来自 `c:player_ping` 请求体）。
     client_machine: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    /// 客户端源 IP（client_id → 源 IP；踢人时按 machine_id 反查其 easytier peer）。
+    client_ip: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl ClientRegistry {
@@ -39,6 +41,7 @@ impl ClientRegistry {
             last_heartbeat: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             active_clients: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             client_machine: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            client_ip: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -65,6 +68,19 @@ impl ClientRegistry {
             None => false,
         }
     }
+
+    /// 查询指定 machine_id 的 SCF TCP 连接源 IP（踢人反查其 easytier peer；
+    /// 无连接/未知 machine_id → `None`）。
+    pub(crate) async fn machine_source_ip(&self, machine_id: &str) -> Option<String> {
+        let client_id = {
+            let machine = self.client_machine.lock().await;
+            machine
+                .iter()
+                .find(|(_, mid)| mid.as_str() == machine_id)
+                .map(|(cid, _)| cid.clone())
+        }?;
+        self.client_ip.lock().await.get(&client_id).cloned()
+    }
 }
 
 /// 处理单个客户端连接（对应 C# `TcpServer.HandleClientAsync`）。
@@ -76,6 +92,7 @@ impl ClientRegistry {
 pub(crate) async fn handle_client(
     mut stream: TcpStream,
     client_id: String,
+    client_ip: String,
     protocols: HashMap<String, Arc<dyn ProtocolHandler>>,
     registry: ClientRegistry,
     disconnected_tx: mpsc::UnboundedSender<String>,
@@ -87,6 +104,11 @@ pub(crate) async fn handle_client(
         .lock()
         .await
         .insert(client_id.clone(), conn_ct.clone());
+    registry
+        .client_ip
+        .lock()
+        .await
+        .insert(client_id.clone(), client_ip);
 
     let result: Result<(), String> = async {
         loop {
@@ -149,6 +171,7 @@ pub(crate) async fn handle_client(
 
     registry.active_clients.lock().await.remove(&client_id);
     registry.last_heartbeat.lock().await.remove(&client_id);
+    registry.client_ip.lock().await.remove(&client_id);
     let machine_id = registry.client_machine.lock().await.remove(&client_id);
     notify_disconnected(&disconnected_tx, machine_id);
 }
@@ -191,5 +214,33 @@ fn notify_disconnected(tx: &mpsc::UnboundedSender<String>, machine_id: Option<St
     let message = machine_id.unwrap_or_default();
     if let Err(e) = tx.send(message) {
         debug!("客户端断开事件发送失败: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn machine_source_ip_resolves_from_registry() {
+        let registry = ClientRegistry::new();
+        // 模拟 guest 连接：client_id = "10.144.144.5:54321"，ping 上报 machine_id
+        registry
+            .client_machine
+            .lock()
+            .await
+            .insert("10.144.144.5:54321".into(), "g1".into());
+        registry
+            .client_ip
+            .lock()
+            .await
+            .insert("10.144.144.5:54321".into(), "10.144.144.5".into());
+
+        assert_eq!(
+            registry.machine_source_ip("g1").await.as_deref(),
+            Some("10.144.144.5")
+        );
+        // 未知 machine_id / 未上报的客户端 → None
+        assert_eq!(registry.machine_source_ip("unknown").await, None);
     }
 }

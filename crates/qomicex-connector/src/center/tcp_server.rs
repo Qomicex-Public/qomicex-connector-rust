@@ -98,6 +98,7 @@ impl TcpServer {
                     match accepted {
                         Ok((stream, addr)) => {
                             let client_id = addr.to_string();
+                            let client_ip = addr.ip().to_string();
                             info!("新客户端连接: {client_id}");
                             let conn_ct = CancellationToken::new();
                             let protocols = self.protocols.clone();
@@ -108,6 +109,7 @@ impl TcpServer {
                                 handle_client(
                                     stream,
                                     client_id,
+                                    client_ip,
                                     protocols,
                                     registry,
                                     disconnected_tx,
@@ -138,5 +140,10 @@ impl TcpServer {
     /// 按 machine_id 定向断开其 TCP 连接（踢人；未连接/未知 machine_id → false）。
     pub async fn disconnect_machine(&self, machine_id: &str) -> bool {
         self.registry.disconnect_machine(machine_id).await
+    }
+
+    /// 按 machine_id 查询其 SCF TCP 连接源 IP（踢人时反查其 easytier peer）。
+    pub async fn machine_source_ip(&self, machine_id: &str) -> Option<String> {
+        self.registry.machine_source_ip(machine_id).await
     }
 }

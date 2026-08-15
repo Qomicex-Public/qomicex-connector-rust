@@ -4,11 +4,12 @@
 //! 锁纪律：`players` 临界区均为同步短段（无 await）；同步上下文经
 //! `try_read/try_write` + `yield_now` 重试等价 C# `lock(_playersLock)` 阻塞语义。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::center::tcp_server::TcpServer;
 use crate::easytier::EasyTierManager;
@@ -26,6 +27,15 @@ use crate::util::CancellationToken;
 const LOCK_RETRY_LIMIT: u32 = 10_000;
 /// 玩家列表（`Arc` 供 `'static` 回调捕获，见翻译日志决策 1）。
 type PlayerList = Arc<tokio::sync::RwLock<Vec<PlayerInfo>>>;
+/// 已踢玩家黑名单（machine_id → 踢出时解析到的 easytier peer id）。
+type KickedSet = Arc<tokio::sync::RwLock<HashMap<String, KickedInfo>>>;
+
+/// 已踢玩家记录：保留踢出时解析到的 easytier peer id，供再次 ping 时重复断开。
+#[derive(Debug, Clone, Default)]
+struct KickedInfo {
+    /// 踢出时解析到的 easytier peer（节点）id；`None` = 无法定位网络层（第三方 guest）。
+    easytier_peer: Option<String>,
+}
 
 /// 联机中心。
 pub struct ScaffoldingCenter {
@@ -48,6 +58,8 @@ pub struct ScaffoldingCenter {
     tcp_port: AtomicU16,
     /// 服务器任务取消令牌（供 `close()` 停止 accept 循环）。
     server_ct: tokio::sync::Mutex<Option<CancellationToken>>,
+    /// 已踢玩家黑名单（防被踢 guest 经 player_ping 重新入列；房间关闭随实例释放）。
+    kicked: KickedSet,
 }
 
 impl ScaffoldingCenter {
@@ -76,6 +88,7 @@ impl ScaffoldingCenter {
             custom_protocols,
             tcp_port: AtomicU16::new(0),
             server_ct: tokio::sync::Mutex::new(None),
+            kicked: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -136,11 +149,39 @@ impl ScaffoldingCenter {
         let players_ping = self.players.clone();
         let players_list = self.players.clone();
         let tx = self.players_changed_tx.clone();
+        let kicked = self.kicked.clone();
+        let tcp_server = self.tcp_server.clone();
+        let easy_tier = self.easy_tier.clone();
         let mut protocols: Vec<Arc<dyn ProtocolHandler>> = vec![
             Arc::new(PingProtocol),
             Arc::new(ProtocolsProtocol::new(advertised_keys)),
             Arc::new(ServerPortProtocol::new(self.minecraft_port)),
-            Arc::new(PlayerPingProtocol::new(move |info| on_player_ping_impl(&players_ping, &tx, info))),
+            Arc::new(PlayerPingProtocol::new(move |info| {
+                // 已踢玩家：拒绝入列（回调返回 false → 响应状态 255，且不刷新心跳），
+                // 并再次物理断开（SCF TCP + easytier），防 re-ping 回归。
+                if is_kicked(&kicked, &info.machine_id) {
+                    let machine_id = info.machine_id.clone();
+                    let peer = kicked_read(&kicked, &machine_id)
+                        .and_then(|k| k.easytier_peer.clone());
+                    let tcp_server = tcp_server.clone();
+                    let easy_tier = easy_tier.clone();
+                    tokio::spawn(async move {
+                        if let Some(server) = tcp_server.lock().await.as_ref() {
+                            if !server.disconnect_machine(&machine_id).await {
+                                debug!("已踢玩家 {machine_id} 的 SCF TCP 连接未找到（可能已断开）");
+                            }
+                        }
+                        if let Some(peer) = peer {
+                            if let Err(e) = easy_tier.lock().await.disconnect_peer(&peer).await {
+                                warn!("已踢玩家 {machine_id} 再次断开 easytier 失败: {e}");
+                            }
+                        }
+                    });
+                    return false;
+                }
+                on_player_ping_impl(&players_ping, &tx, info);
+                true
+            })),
             Arc::new(PlayerProfilesListProtocol::new(move || with_players_read(&players_list, |l| l.to_vec()).unwrap_or_default())),
         ];
         protocols.extend(self.custom_protocols.iter().cloned());
@@ -199,30 +240,74 @@ impl ScaffoldingCenter {
     }
 
     /// 踢出玩家（房主手动断开指定 guest）：
-    /// ① easytier 层关闭其全部连接（非 QML SCF 客户端不受 Scaffolding 协议控制，
-    ///    只能物理断开虚拟网络）；② 断开其 Scaffolding TCP 连接（QML guest 心跳
-    ///    失败后自动整体退出）；③ 从玩家列表移除。
+    /// ① 解析其 easytier peer 并物理断开（优先已上报 easytier_id，否则 hostname / SCF 源虚拟 IP
+    ///    反查；非 QML SCF 客户端不受 Scaffolding 协议控制，只能物理断开虚拟网络）；
+    /// ② 记入已踢黑名单（后续 re-ping 拒绝入列并重复断开）；③ 断开其 Scaffolding TCP
+    /// （QML guest 心跳失败后自动整体退出）；④ 从玩家列表移除。
     pub async fn kick_player(&self, machine_id: &str) {
-        // ① easytier 物理断开（guest 的 easytier_id 由 player_ping 上报）
-        let easytier_id = self
+        // ① 解析 easytier peer id 并物理断开
+        let reported_easytier_id = self
             .players
             .read()
             .await
             .iter()
             .find(|p| p.machine_id == machine_id)
             .and_then(|p| p.easytier_id.clone());
-        if let Some(peer_id) = easytier_id {
-            if let Err(e) = self.easy_tier.lock().await.disconnect_peer(&peer_id).await {
+        let peer_id = match reported_easytier_id.as_deref() {
+            Some(id) => Some(id.to_string()),
+            None => self.resolve_guest_easytier_peer(machine_id).await,
+        };
+        if let Some(peer_id) = &peer_id {
+            if let Err(e) = self.easy_tier.lock().await.disconnect_peer(peer_id).await {
                 warn!("踢出玩家 {machine_id} 时断开 easytier 连接失败: {e}");
             }
+        } else {
+            warn!(
+                "踢出玩家 {machine_id} 无法解析其 easytier peer（未上报 easytier_id 且 hostname/源IP 反查失败），仅断开 Scaffolding TCP + 拉黑"
+            );
         }
-        // ② 断开 Scaffolding TCP（存在则触发断开事件）
+        // ② 已踢黑名单（防 re-ping 回归；peer id 供再次 ping 时重复断开）
+        self.kicked.write().await.insert(
+            machine_id.to_string(),
+            KickedInfo {
+                easytier_peer: peer_id,
+            },
+        );
+        // ③ 断开 Scaffolding TCP（存在则触发断开事件）
         if let Some(server) = self.tcp_server.lock().await.as_ref() {
-            server.disconnect_machine(machine_id).await;
+            if !server.disconnect_machine(machine_id).await {
+                warn!("踢出玩家 {machine_id} 时未找到其 Scaffolding TCP 连接（可能已断开）");
+            }
         }
-        // ③ 玩家列表移除
+        // ④ 玩家列表移除
         self.remove_player(machine_id);
         info!("已踢出玩家: {machine_id}");
+    }
+
+    /// 解析 guest 的 easytier peer id（未上报 easytier_id 时的兜底反查）：
+    /// ① 按 hostname `scaffolding-mc-guest-{machine_id 前 8 字符}` 匹配（Qomicex 系 guest 约定，
+    ///    对齐 Rust/C# guest 的 easytier hostname 命名）；② 按 SCF TCP 源虚拟 IP 匹配
+    ///    （guest 的 SCF 连接走 easytier 虚拟网时源地址即其虚拟 IP，对第三方 guest 也有效）。
+    /// 均失败返回 `None`（第三方 guest 无法定位网络层）。
+    async fn resolve_guest_easytier_peer(&self, machine_id: &str) -> Option<String> {
+        let nodes = self.easy_tier.lock().await.get_nodes().await;
+        let hostname = format!(
+            "scaffolding-mc-guest-{}",
+            machine_id.chars().take(8).collect::<String>()
+        );
+        if let Some(node) = nodes.iter().find(|n| n.hostname == hostname) {
+            info!("踢出 {machine_id}: 按 easytier hostname 反查命中 peer {}", node.node_id);
+            return Some(node.node_id.clone());
+        }
+        if let Some(server) = self.tcp_server.lock().await.as_ref() {
+            if let Some(src_ip) = server.machine_source_ip(machine_id).await {
+                if let Some(node) = nodes.iter().find(|n| n.virtual_ip == src_ip) {
+                    info!("踢出 {machine_id}: 按 SCF 源虚拟 IP {src_ip} 反查命中 peer {}", node.node_id);
+                    return Some(node.node_id.clone());
+                }
+            }
+        }
+        None
     }
 
     /// 关闭房间：停止 TCP 服务器并清理本实例启动的 EasyTier 实例（对应 C# `CloseAsync`）。
@@ -294,4 +379,74 @@ fn with_players_read<R>(players: &PlayerList, f: impl FnOnce(&[PlayerInfo]) -> R
     }
     warn!("玩家列表读锁等待超时");
     None
+}
+
+/// 已踢检查（同步回调内使用）：machine_id 在已踢黑名单中返回 `true`。
+fn is_kicked(kicked: &KickedSet, machine_id: &str) -> bool {
+    kicked_read(kicked, machine_id).is_some()
+}
+
+/// 已踢名单读取（同步回调内使用；读锁重试对齐 `with_players_read`）。
+fn kicked_read(kicked: &KickedSet, machine_id: &str) -> Option<KickedInfo> {
+    for _ in 0..LOCK_RETRY_LIMIT {
+        if let Ok(guard) = kicked.try_read() {
+            return guard.get(machine_id).cloned();
+        }
+        std::thread::yield_now();
+    }
+    warn!("已踢名单读锁等待超时");
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::protocol::ProtocolRequest;
+    use crate::protocols::PlayerPingProtocol;
+    use serde_json::json;
+
+    fn ping_body(machine_id: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "name": "KickedPlayer",
+            "machine_id": machine_id,
+            "vendor": "third-party"
+        }))
+        .expect("构造测试体失败")
+    }
+
+    #[tokio::test]
+    async fn kicked_guest_ping_is_rejected_not_readded() {
+        let kicked: KickedSet = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        // 踢出场景：guest 未上报 easytier_id 且反查失败 → KickedInfo.easytier_peer = None
+        kicked
+            .write()
+            .await
+            .insert("k1".into(), KickedInfo { easytier_peer: None });
+
+        // 黑名单生效：被踢 machine_id 判定为已踢，未踢的不受影响
+        assert!(is_kicked(&kicked, "k1"));
+        assert!(!is_kicked(&kicked, "k2"));
+
+        // 协议层：被踢 guest 再发 c:player_ping → 拒绝（状态 255，不刷新心跳 → 15s 兜底剔除）
+        let handler =
+            PlayerPingProtocol::new(move |info| !is_kicked(&kicked, &info.machine_id));
+        let rejected = handler
+            .handle(&ProtocolRequest {
+                namespace: "c".into(),
+                request_type: "player_ping".into(),
+                body: ping_body("k1"),
+            })
+            .await;
+        assert_eq!(rejected.status, 255);
+
+        // 普通玩家 ping 正常接受
+        let accepted = handler
+            .handle(&ProtocolRequest {
+                namespace: "c".into(),
+                request_type: "player_ping".into(),
+                body: ping_body("k2"),
+            })
+            .await;
+        assert_eq!(accepted.status, 0);
+    }
 }
