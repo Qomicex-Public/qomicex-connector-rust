@@ -12,6 +12,12 @@
 - **`qomicex-connector`** —— 可被任意 Rust 程序引用的库（本文档主角）。
 - **`qomicex-connector-cli`** —— 命令行程序（`relay` / `host` / `guest` 子命令）。
 
+## 架构定位（重要）
+
+本库是**符合标准 SCF 协议的联机库**：只实现协议与提供**拓展接口**，**不内置任何业务功能**。
+踢人、黑名单、重连审核等"房主管理"能力不属于 SCF 协议，一律由**调用方**（如 Qomicex 启动器 backend）
+通过本库的拓展接口自行实现。判断标准：改的是协议/接口 → 进本库；是业务功能 → 放调用方。
+
 ## 一、工作原理
 
 联机遵循社区 **SCF 标准协议**（命名空间 `c`，代表 community），核心流程：
@@ -57,7 +63,7 @@ U/XXXX-XXXX-XXXX-XXXX
 # 全 workspace 检查
 cargo check
 
-# 单元测试（35 个：RoomCode / 序列化帧互操作 golden / 协商 / 发现 / 协议处理器 / 中继节点）
+# 单元测试（46 个：RoomCode / 序列化帧互操作 golden / 协商 / 发现 / 协议处理器 / 中继节点 / player_ping 裁决契约）
 cargo test -p qomicex-connector
 
 # 端到端集成测试（需要真实 EasyTier 实例，默认跳过）
@@ -94,8 +100,8 @@ use qomicex_connector::util::CancellationToken;
 let ct = CancellationToken::new();
 let client = ScaffoldingClient::new(None, None, None, None);
 
-// Host
-let center = client.create_room("Steve".into(), "machine-id".into(), "qml".into(), 25565, ct.clone(), vec![]).await?;
+// Host（第 7 参数为可选的 player_ping 裁决钩子，见"拓展接口"；None = 标准 SCF 行为）
+let center = client.create_room("Steve".into(), "machine-id".into(), "qml".into(), 25565, ct.clone(), vec![], None).await?;
 let room_code = center.room_code().raw().to_string();
 
 // Guest
@@ -113,9 +119,45 @@ use qomicex_connector::protocols::{DelegateProtocol, ProtocolHandler};
 let proto: Arc<dyn ProtocolHandler> = Arc::new(
     DelegateProtocol::new_json("qml:game_version", || "1.20.1".to_string())
 );
-let center = client.create_room(/* ... */, ct.clone(), vec![proto]).await?;
+let center = client.create_room(/* ... */, ct.clone(), vec![proto], None).await?;
 ```
 
-## 七、许可证
+## 七、拓展接口（业务功能由调用方实现）
+
+本库为调用方提供的全部"钩子 + 能力"，组合它们即可实现踢人/黑名单/重连审核等业务功能，
+库内零业务代码：
+
+| 接口 | 说明 |
+| --- | --- |
+| `ScaffoldingCenter::set_player_ping_handler` / `create_room(..., player_ping_handler)` | `c:player_ping` 裁决钩子（须在 `start` 前注入）。返回 `false` → 响应状态 255（不刷新心跳 → 15s 心跳超时兜底剔除）；返回 `true` 且不委托 → 保持连接不入列。**入列与否由调用方闭包决定** |
+| `ScaffoldingCenter::handle_player_ping(info)` | 标准 SCF 入列行为（更新/加入玩家 + 通知），供调用方闭包在未命中自定义逻辑时委托 |
+| `ScaffoldingCenter::disconnect_machine(machine_id)` | 按 machine_id 定向断开 SCF TCP 连接 |
+| `ScaffoldingCenter::machine_source_ip(machine_id)` | 查询 SCF TCP 连接源 IP（反查 easytier peer 用） |
+| `ScaffoldingCenter::easy_tier_nodes()` | 当前网络全部节点快照（hostname / 虚拟 IP / peer id） |
+| `ScaffoldingCenter::disconnect_peer(peer_id)` | 断开与指定 easytier peer 的全部连接 |
+| `ScaffoldingCenter::remove_player(machine_id)` / `get_players()` | 玩家列表维护 |
+
+示例：房主侧踢人 + 重连审核（调用方实现）：
+
+```rust
+use qomicex_connector::center::scaffolding_center::ScaffoldingCenter;
+use qomicex_connector::models::player::PlayerInfo;
+use std::sync::{Arc, RwLock};
+
+// 调用方自己的黑名单状态（业务数据）
+let kicked: Arc<RwLock<std::collections::HashMap<String, bool>>> = Arc::new(RwLock::new(HashMap::new()));
+let kicked2 = kicked.clone();
+let handler = Arc::new(move |info: PlayerInfo| {
+    let blacklisted = kicked2.read().unwrap().get(&info.machine_id).copied().unwrap_or(false);
+    if blacklisted {
+        return false; // 拒绝：状态 255，不刷新心跳
+    }
+    // 委托标准入列需要 center 句柄（建房后回填的 slot），此处省略
+    true
+});
+let center = client.create_room(/* ... */, ct.clone(), vec![], Some(handler)).await?;
+```
+
+## 八、许可证
 
 [GPLv3](LICENSE) — 本项目为自由软件，你可以自由分发与修改，但衍生作品必须同样以 GPL 兼容许可证发布并开放源代码。

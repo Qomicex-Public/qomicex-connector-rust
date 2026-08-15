@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::center::scaffolding_center::ScaffoldingCenter;
+use crate::center::scaffolding_center::{PlayerPingHandler, ScaffoldingCenter};
 use crate::error::ScaffoldingError;
 use crate::guest::scaffolding_guest::ScaffoldingGuest;
 use crate::models::room_code::RoomCode;
@@ -115,6 +115,8 @@ impl ScaffoldingClient {
     /// 创建房间（Host）：生成房间码 → 解析中继节点 → 启动联机中心。
     /// `custom_protocols` 为自定义扩展协议（如 `qml:game_info`），自动参与广告与协商
     /// （对应 C# `CreateRoomAsync` 的 `customProtocols` 参数）。
+    /// `player_ping_handler` 为可选的 `c:player_ping` 处理钩子（拓展接口）：调用方可注入
+    /// 裁决逻辑（如踢人黑名单/重连审核），`None` 时使用标准 SCF 行为（入列 + 通知）。
     /// 成功后返回联机中心句柄，并纳入本客户端的托管列表（`close_all` 统一关闭）。
     pub async fn create_room(
         &self,
@@ -124,6 +126,7 @@ impl ScaffoldingClient {
         minecraft_port: u16,
         ct: CancellationToken,
         custom_protocols: Vec<Arc<dyn ProtocolHandler>>,
+        player_ping_handler: Option<PlayerPingHandler>,
     ) -> Result<Arc<ScaffoldingCenter>, ScaffoldingError> {
         let room_code = RoomCode::generate();
         log::info!("创建房间: 端口 {minecraft_port}");
@@ -138,6 +141,9 @@ impl ScaffoldingClient {
             Some(relay_nodes),
             custom_protocols,
         ));
+        if let Some(handler) = player_ping_handler {
+            center.set_player_ping_handler(handler).await;
+        }
         center.start(ct).await?;
 
         self.managed_centers.lock().await.push(center.clone());

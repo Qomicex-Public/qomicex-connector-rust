@@ -145,6 +145,7 @@ async fn run_host(
             port,
             ct.clone(),
             Vec::new(),
+            None, // player_ping 处理钩子（调用方按需注入）
         )
         .await?;
     println!("房间码: {}", center.room_code().raw());
