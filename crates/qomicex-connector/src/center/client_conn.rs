@@ -149,7 +149,9 @@ pub(crate) async fn handle_client(
                             .insert(client_id.clone(), Instant::now());
                         if let Ok(root) = serde_json::from_slice::<serde_json::Value>(&request.body) {
                             if let Some(mid) = root.get("machine_id") {
-                                let machine_id = mid.as_str().unwrap_or("").to_string();
+                                // 宽容解析（第三方可能发数字 machine_id）
+                                let machine_id =
+                                    crate::protocols::value_to_string(mid).unwrap_or_default();
                                 registry
                                     .client_machine
                                     .lock()

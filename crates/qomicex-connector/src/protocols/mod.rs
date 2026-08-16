@@ -168,6 +168,18 @@ impl ProtocolHandler for PlayerPingProtocol {
     }
 }
 
+/// 宽容解析 JSON 值为字符串（跨启动器互操作）：
+/// 字符串原样返回；数字（int/uint/float）转字符串——第三方启动器可能发
+/// 数字类型的 `easytier_id`/`machine_id`（C# `GetString()` 会抛异常、
+/// `Value::as_str` 返回 None，本实现容忍并归一为字符串）。
+pub(crate) fn value_to_string(v: &Value) -> Option<String> {
+    v.as_str()
+        .map(String::from)
+        .or_else(|| v.as_i64().map(|n| n.to_string()))
+        .or_else(|| v.as_u64().map(|n| n.to_string()))
+        .or_else(|| v.as_f64().map(|n| n.to_string()))
+}
+
 /// 手动解析玩家心跳 JSON。
 ///
 /// 容错语义为**有意改进**（对比 C# `GetProperty().GetString()` 裸调用）：
@@ -178,18 +190,14 @@ fn parse_player_info(body: &[u8]) -> Result<PlayerInfo, serde_json::Error> {
     let root: Value = serde_json::from_slice(body)?;
     let str_or = |key: &str| {
         root.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
+            .and_then(value_to_string)
+            .unwrap_or_default()
     };
     Ok(PlayerInfo {
         name: str_or("name"),
         machine_id: str_or("machine_id"),
         vendor: str_or("vendor"),
-        easytier_id: root
-            .get("easytier_id")
-            .and_then(Value::as_str)
-            .map(String::from),
+        easytier_id: root.get("easytier_id").and_then(value_to_string),
         kind: PlayerKind::Host,
     })
 }
@@ -429,6 +437,41 @@ mod tests {
         assert_eq!(info.machine_id, "m123");
         assert_eq!(info.vendor, "TestVendor");
         assert_eq!(info.easytier_id, None);
+    }
+
+    #[tokio::test]
+    async fn player_ping_parses_numeric_easytier_id_and_machine_id() {
+        // 第三方启动器可能发数字类型的 easytier_id/machine_id：
+        // 必须归一为字符串（C# GetString() 会抛异常、as_str 返回 None → bug）。
+        let captured = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+        let handler = PlayerPingProtocol::new(move |info| {
+            *captured_clone.lock().unwrap() = Some(info);
+            true
+        });
+
+        let json = json!({
+            "name": "NumericThirdParty",
+            "machine_id": 9527,
+            "vendor": "third-party",
+            "easytier_id": 123456
+        });
+        let response = handler
+            .handle(&ProtocolRequest {
+                namespace: "c".into(),
+                request_type: "player_ping".into(),
+                body: serde_json::to_vec(&json).expect("构造测试体失败"),
+            })
+            .await;
+
+        assert_eq!(response.status, 0);
+        let info = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("回调未触发");
+        assert_eq!(info.machine_id, "9527");
+        assert_eq!(info.easytier_id.as_deref(), Some("123456"));
     }
 
     #[tokio::test]

@@ -509,23 +509,19 @@ impl ScaffoldingGuest {
             players.push(PlayerInfo {
                 name: obj
                     .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
+                    .and_then(crate::protocols::value_to_string)
+                    .unwrap_or_default(),
                 machine_id: obj
                     .get("machine_id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
+                    .and_then(crate::protocols::value_to_string)
+                    .unwrap_or_default(),
                 vendor: obj
                     .get("vendor")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
+                    .and_then(crate::protocols::value_to_string)
+                    .unwrap_or_default(),
                 easytier_id: obj
                     .get("easytier_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(String::from),
+                    .and_then(crate::protocols::value_to_string),
                 kind: if obj
                     .get("kind")
                     .and_then(serde_json::Value::as_str)
