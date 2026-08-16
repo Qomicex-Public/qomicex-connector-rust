@@ -286,7 +286,11 @@ fn on_player_ping_impl(players: &PlayerList, tx: &tokio::sync::watch::Sender<Vec
     with_players_write(players, |list| match list.iter_mut().find(|p| p.machine_id == info.machine_id) {
         Some(existing) => {
             existing.name = info.name;
-            existing.easytier_id = info.easytier_id;
+            // 保守覆盖：仅当本次 ping 带有效 easytier_id 时才更新；null/缺失不覆盖已有 id
+            // （第三方 guest 偶发 null ping 会清掉 id → 踢人时无法按 id deny_peer，只能反查兜底）。
+            if info.easytier_id.is_some() {
+                existing.easytier_id = info.easytier_id;
+            }
             existing.vendor = info.vendor;
         }
         None => {
@@ -402,6 +406,17 @@ mod tests {
         assert_eq!(players.len(), 1);
         assert_eq!(players[0].name, "Renamed");
         assert_eq!(players[0].easytier_id.as_deref(), Some("peer-1"));
+
+        // 保守覆盖：null/缺失 easytier_id 不得清掉已上报的 id（第三方偶发 null ping）
+        center.handle_player_ping(PlayerInfo {
+            name: "Renamed".into(),
+            machine_id: "g1".into(),
+            vendor: "qml".into(),
+            easytier_id: None,
+            kind: PlayerKind::Guest,
+        });
+        let players = center.get_players();
+        assert_eq!(players[0].easytier_id.as_deref(), Some("peer-1"), "null ping 不应清掉已有 id");
     }
 
     #[tokio::test]
