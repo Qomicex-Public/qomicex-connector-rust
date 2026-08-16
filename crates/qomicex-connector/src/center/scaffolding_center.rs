@@ -259,6 +259,18 @@ impl ScaffoldingCenter {
         self.easy_tier.lock().await.disconnect_peer(peer_id).await
     }
 
+    /// 将指定 easytier peer 加入 deny 黑名单并立即断开其全部连接（调用方踢人/封禁等用途；
+    /// **持久**物理封禁——对方重连请求在连接建立处被拒，与 [`Self::disconnect_peer`] 的
+    /// 瞬时断开不同）。
+    pub async fn deny_peer(&self, peer_id: &str) -> Result<(), ScaffoldingError> {
+        self.easy_tier.lock().await.deny_peer(peer_id).await
+    }
+
+    /// 解除 deny（允许该 easytier peer 重新连接）。
+    pub async fn allow_peer(&self, peer_id: &str) -> Result<(), ScaffoldingError> {
+        self.easy_tier.lock().await.allow_peer(peer_id).await
+    }
+
     /// 关闭房间：停止 TCP 服务器并清理本实例启动的 EasyTier 实例（对应 C# `CloseAsync`）。
     pub async fn close(&self, _ct: CancellationToken) -> Result<(), ScaffoldingError> {
         if let Some(mut server) = self.tcp_server.lock().await.take() { server.stop(); } // C# `_tcpServer?.Stop()`

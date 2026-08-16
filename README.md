@@ -134,8 +134,13 @@ let center = client.create_room(/* ... */, ct.clone(), vec![proto], None).await?
 | `ScaffoldingCenter::disconnect_machine(machine_id)` | 按 machine_id 定向断开 SCF TCP 连接 |
 | `ScaffoldingCenter::machine_source_ip(machine_id)` | 查询 SCF TCP 连接源 IP（反查 easytier peer 用） |
 | `ScaffoldingCenter::easy_tier_nodes()` | 当前网络全部节点快照（hostname / 虚拟 IP / peer id） |
-| `ScaffoldingCenter::disconnect_peer(peer_id)` | 断开与指定 easytier peer 的全部连接 |
+| `ScaffoldingCenter::disconnect_peer(peer_id)` | 断开与指定 easytier peer 的全部连接（瞬时；对方在线可能自动重连） |
+| `ScaffoldingCenter::deny_peer(peer_id)` | 将指定 easytier peer 加入 deny 黑名单并立即断开其全部连接（**持久**物理封禁：对方入站/出站连接请求在连接建立处被拒，自动重连/重启也连不上）。底层来自 fork `CoreInstance::deny_peer`；配合 `allow_peer` 可解封 |
+| `ScaffoldingCenter::allow_peer(peer_id)` | 解除 deny（允许该 easytier peer 重新连接） |
 | `ScaffoldingCenter::remove_player(machine_id)` / `get_players()` | 玩家列表维护 |
+
+> 能力来源说明：`deny_peer`/`allow_peer` 的准入控制实现在 **EasyTier4QML fork**（`easytier-core` 网络层），
+> 本库仅做委托暴露，业务语义（何时 deny / 何时放行 / 黑名单状态机）由调用方决定。
 
 示例：房主侧踢人 + 重连审核（调用方实现）：
 

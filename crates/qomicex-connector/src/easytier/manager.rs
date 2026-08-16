@@ -153,6 +153,40 @@ impl EasyTierManager {
             .map_err(|e| ScaffoldingError::EasyTierStart(format!("断开 peer 失败: {e}")))
     }
 
+    /// 将指定 easytier 节点（peer_id）加入 deny 黑名单并立即断开其全部连接
+    /// （踢人场景的**持久**物理封禁）：对方后续入站/出站连接请求会在连接建立处被拒，
+    /// 自动重连也连不上（fork `CoreInstance::deny_peer`）。
+    pub async fn deny_peer(&self, peer_id: &str) -> Result<(), ScaffoldingError> {
+        let Some(instance_id) = self.instance_id else {
+            return Ok(());
+        };
+        let Some(instance) = self.manager.instance(instance_id) else {
+            return Ok(());
+        };
+        let peer_id: easytier_core::config::PeerId = peer_id
+            .parse()
+            .map_err(|e| ScaffoldingError::EasyTierStart(format!("无效的 peer id: {peer_id}: {e}")))?;
+        instance
+            .deny_peer(peer_id)
+            .await
+            .map_err(|e| ScaffoldingError::EasyTierStart(format!("deny peer 失败: {e}")))
+    }
+
+    /// 解除 deny（允许该 easytier 节点重新连接）。
+    pub async fn allow_peer(&self, peer_id: &str) -> Result<(), ScaffoldingError> {
+        let Some(instance_id) = self.instance_id else {
+            return Ok(());
+        };
+        let Some(instance) = self.manager.instance(instance_id) else {
+            return Ok(());
+        };
+        let peer_id: easytier_core::config::PeerId = peer_id
+            .parse()
+            .map_err(|e| ScaffoldingError::EasyTierStart(format!("无效的 peer id: {peer_id}: {e}")))?;
+        instance.allow_peer(peer_id).await;
+        Ok(())
+    }
+
     /// 动态修改运行中实例的配置（运行时覆盖，不重启实例、不断开网络连接）。
     ///
     /// 底层调用 `easytier_core::management::apply_config_patch`：
