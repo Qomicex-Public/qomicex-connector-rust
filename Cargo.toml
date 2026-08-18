@@ -24,7 +24,7 @@ cidr = { version = "0.3.1", features = ["serde"] }
 sys-locale = "0.3"
 network-interface = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier", default-features = false, features = [
+easytier = { git = "https://github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier", default-features = false, features = [
     "aes-gcm",
     "endpoint-discovery",
     "extended-services",
@@ -40,7 +40,7 @@ easytier = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev =
     "wireguard",
     "upnp",
 ] }
-easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier-core", default-features = false, features = [
+easytier-core = { git = "https://github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier-core", default-features = false, features = [
     "aes-gcm",
     "endpoint-discovery",
     "extended-services",
@@ -51,5 +51,5 @@ easytier-core = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", 
     "proxy-packet",
     "vpn-portal",
 ] }
-easytier-proto = { git = "ssh://git@github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier-proto", default-features = false, features = ["api", "core", "quic", "faketcp", "websocket", "wireguard"] }
+easytier-proto = { git = "https://github.com/Qomicex-Public/EasyTier4QML.git", rev = "9055aef", package = "easytier-proto", default-features = false, features = ["api", "core", "quic", "faketcp", "websocket", "wireguard"] }
 
