@@ -117,6 +117,8 @@ impl RelayNodeProvider {
     }
 
     /// 请求端点并解析节点：先解析 JSON，再将 http(s) 节点二次解析为实际节点。
+    /// 返回 `None` = 请求失败或**响应非法**（进入重试）；`Some(空)` = 合法空列表
+    /// （不重试，直接回退默认节点）。
     async fn fetch_nodes(&self, url: &str) -> Option<Vec<String>> {
         let response = self
             .client
@@ -129,7 +131,9 @@ impl RelayNodeProvider {
             return None;
         }
         let json = response.text().await.ok()?;
-        let nodes = parse_nodes(&json, self.preferred_region.as_deref());
+        // JSON 非法/非数组 → None（可重试），而非 Some(空)（会绕过重试，
+        // 见 CodeRabbit 对 #1 的评审：网关返回 HTML 错误页是最常见的瞬时故障形态）。
+        let nodes = parse_nodes(&json, self.preferred_region.as_deref())?;
         let mut resolved = Vec::with_capacity(nodes.len());
         for node in nodes {
             if is_http_url(&node) {
@@ -181,14 +185,10 @@ impl RelayNodeProvider {
 }
 
 /// 解析节点 JSON 数组：元素需含非空 url 字符串与可选 region；preferred 匹配（大小写不敏感）排前，其余保序在后。
-/// JSON 非法或非数组时返回空列表。
-pub fn parse_nodes(json: &str, preferred_region: Option<&str>) -> Vec<String> {
-    let Ok(value) = serde_json::from_str::<Value>(json) else {
-        return Vec::new();
-    };
-    let Some(array) = value.as_array() else {
-        return Vec::new();
-    };
+/// 返回 `None` 表示 JSON 非法或非数组（响应本身无效，区别于合法的空数组 `Some(空)`）。
+pub fn parse_nodes(json: &str, preferred_region: Option<&str>) -> Option<Vec<String>> {
+    let value = serde_json::from_str::<Value>(json).ok()?;
+    let array = value.as_array()?;
     let mut preferred = Vec::new();
     let mut rest = Vec::new();
     for element in array {
@@ -209,7 +209,7 @@ pub fn parse_nodes(json: &str, preferred_region: Option<&str>) -> Vec<String> {
         .push(url.to_string());
     }
     preferred.extend(rest);
-    preferred
+    Some(preferred)
 }
 
 #[cfg(test)]
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn parse_nodes_valid_object_array_returns_urls() {
         let json = r#"[{"url":"tcp://a.example.com:11010","name":"hk"},{"url":"udp://b.example.com:11010","region":"jp"}]"#;
-        let nodes = parse_nodes(json, None);
+        let nodes = parse_nodes(json, None).expect("合法数组应解析成功");
         assert_eq!(
             nodes,
             ["tcp://a.example.com:11010", "udp://b.example.com:11010"]
@@ -282,18 +282,18 @@ mod tests {
     #[test]
     fn parse_nodes_missing_or_empty_url_skipped() {
         let json = r#"[{"name":"no-url"},{"url":""},{"url":"tcp://ok.example.com:11010"}]"#;
-        let nodes = parse_nodes(json, None);
+        let nodes = parse_nodes(json, None).expect("合法数组应解析成功");
         assert_eq!(nodes, ["tcp://ok.example.com:11010"]);
     }
 
     #[test]
-    fn parse_nodes_invalid_json_returns_empty() {
-        assert!(parse_nodes("not json", None).is_empty());
+    fn parse_nodes_invalid_json_returns_none() {
+        assert!(parse_nodes("not json", None).is_none());
     }
 
     #[test]
-    fn parse_nodes_not_array_returns_empty() {
-        assert!(parse_nodes(r#"{"url":"tcp://a:11010"}"#, None).is_empty());
+    fn parse_nodes_not_array_returns_none() {
+        assert!(parse_nodes(r#"{"url":"tcp://a:11010"}"#, None).is_none());
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
           {"url":"https://node-none.example.com"},
           {"url":"https://node-cn2.example.com","region":"CN"}
         ]"#;
-        let nodes = parse_nodes(json, Some("CN"));
+        let nodes = parse_nodes(json, Some("CN")).expect("合法数组应解析成功");
         assert_eq!(
             nodes,
             [
@@ -319,21 +319,21 @@ mod tests {
     #[test]
     fn parse_nodes_preferred_region_case_insensitive() {
         let json = r#"[{"url":"https://a.example.com","region":"JP"},{"url":"https://b.example.com","region":"cn"}]"#;
-        let nodes = parse_nodes(json, Some("CN"));
+        let nodes = parse_nodes(json, Some("CN")).expect("合法数组应解析成功");
         assert_eq!(nodes, ["https://b.example.com", "https://a.example.com"]);
     }
 
     #[test]
     fn parse_nodes_no_preferred_region_keeps_api_order() {
         let json = r#"[{"url":"https://a.example.com","region":"JP"},{"url":"https://b.example.com","region":"CN"}]"#;
-        let nodes = parse_nodes(json, None);
+        let nodes = parse_nodes(json, None).expect("合法数组应解析成功");
         assert_eq!(nodes, ["https://a.example.com", "https://b.example.com"]);
     }
 
     #[test]
     fn parse_nodes_no_matching_region_keeps_api_order() {
         let json = r#"[{"url":"https://a.example.com","region":"JP"},{"url":"https://b.example.com","region":"US"}]"#;
-        let nodes = parse_nodes(json, Some("CN"));
+        let nodes = parse_nodes(json, Some("CN")).expect("合法数组应解析成功");
         assert_eq!(nodes, ["https://a.example.com", "https://b.example.com"]);
     }
 
@@ -405,14 +405,15 @@ mod tests {
         assert_eq!(ENDPOINT, "https://nodes.qomicex.top/api/nodes");
     }
 
-    /// 启动本地 HTTP 服务器：前 `fail_first` 个连接返回 500，之后返回 `ok_body`。
+    /// 启动本地 HTTP 服务器：前 `fail_first` 个连接返回 `fail_response`，之后返回 `ok_body`。
     /// 用于验证拉取失败重试语义（重试次数以服务器收到的请求计数为准）。
     async fn start_flaky_server(
         fail_first: usize,
+        fail_response: &str,
         ok_body: &str,
     ) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
         let ok = http_response("200 OK", ok_body);
-        let fail = http_response("500 Internal Server Error", "");
+        let fail = fail_response.to_string();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -458,18 +459,43 @@ mod tests {
     /// 回归（联机拉取抖动）：首次拉取失败应重试一次，第二次成功即采用其结果。
     #[tokio::test]
     async fn fetch_retry_once_then_succeed() {
-        let (addr, seen) =
-            start_flaky_server(1, r#"[{"url":"tcp://retry.example.com:11010"}]"#).await;
+        let (addr, seen) = start_flaky_server(
+            1,
+            &http_response("500 Internal Server Error", ""),
+            r#"[{"url":"tcp://retry.example.com:11010"}]"#,
+        )
+        .await;
         let provider = RelayNodeProvider::new(None, None);
         let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
         assert_eq!(nodes, ["tcp://retry.example.com:11010"]);
         assert_eq!(seen.lock().await.len(), 2, "首次失败后应重试一次");
     }
 
+    /// 回归（CodeRabbit 评审）：首个响应 HTTP 200 但 body 非法（如网关返回 HTML
+    /// 错误页）→ parse_nodes 失败 → 必须进入重试分支而非走"空列表回退"。
+    #[tokio::test]
+    async fn fetch_malformed_first_response_retries_then_succeeds() {
+        let (addr, seen) = start_flaky_server(
+            1,
+            &http_response("200 OK", "<html>502 Bad Gateway</html>"),
+            r#"[{"url":"tcp://after-malformed.example.com:11010"}]"#,
+        )
+        .await;
+        let provider = RelayNodeProvider::new(None, None);
+        let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
+        assert_eq!(nodes, ["tcp://after-malformed.example.com:11010"]);
+        assert_eq!(seen.lock().await.len(), 2, "非法响应应触发重试");
+    }
+
     /// 回归：两次尝试均失败 → 回退内置默认节点，且总共只请求 2 次（初试 + 1 次重试）。
     #[tokio::test]
     async fn fetch_both_attempts_fail_returns_default_nodes() {
-        let (addr, seen) = start_flaky_server(usize::MAX, "{}").await;
+        let (addr, seen) = start_flaky_server(
+            usize::MAX,
+            &http_response("500 Internal Server Error", ""),
+            "{}",
+        )
+        .await;
         let provider = RelayNodeProvider::new(None, None);
         let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
         assert_eq!(nodes, default_nodes());
