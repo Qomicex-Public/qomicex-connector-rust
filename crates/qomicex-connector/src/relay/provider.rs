@@ -82,6 +82,10 @@ impl RelayNodeProvider {
     }
 
     /// 从指定端点获取中继节点列表（内部可注入实现，便于测试）。
+    ///
+    /// 拉取失败（网络错误 / 非 2xx / 解析失败）重试一次：节点列表是联机的
+    /// 唯一入口，一次瞬时抖动就回退到内置默认节点（两个易逝部署）会导致
+    /// 整场联机不可用（issue #182 实测）。成功即返回，不叠加重试。
     pub async fn fetch_from(&self, url: &str) -> Vec<String> {
         match self.fetch_nodes(url).await {
             Some(nodes) if nodes.is_empty() => {
@@ -93,8 +97,21 @@ impl RelayNodeProvider {
                 nodes
             }
             None => {
-                log::warn!("获取中继节点失败，回退到内置默认节点");
-                default_nodes()
+                log::warn!("获取中继节点失败，重试一次");
+                match self.fetch_nodes(url).await {
+                    Some(nodes) if nodes.is_empty() => {
+                        log::warn!("重试后节点服务仍返回空列表，回退到内置默认节点");
+                        default_nodes()
+                    }
+                    Some(nodes) => {
+                        log::info!("重试成功：已从节点服务获取 {} 个中继节点", nodes.len());
+                        nodes
+                    }
+                    None => {
+                        log::warn!("获取中继节点失败，回退到内置默认节点");
+                        default_nodes()
+                    }
+                }
             }
         }
     }
@@ -184,7 +201,12 @@ pub fn parse_nodes(json: &str, preferred_region: Option<&str>) -> Vec<String> {
         let region = element.get("region").and_then(|r| r.as_str());
         let is_preferred = preferred_region
             .is_some_and(|pref| region.is_some_and(|r| r.eq_ignore_ascii_case(pref)));
-        (if is_preferred { &mut preferred } else { &mut rest }).push(url.to_string());
+        (if is_preferred {
+            &mut preferred
+        } else {
+            &mut rest
+        })
+        .push(url.to_string());
     }
     preferred.extend(rest);
     preferred
@@ -305,20 +327,14 @@ mod tests {
     fn parse_nodes_no_preferred_region_keeps_api_order() {
         let json = r#"[{"url":"https://a.example.com","region":"JP"},{"url":"https://b.example.com","region":"CN"}]"#;
         let nodes = parse_nodes(json, None);
-        assert_eq!(
-            nodes,
-            ["https://a.example.com", "https://b.example.com"]
-        );
+        assert_eq!(nodes, ["https://a.example.com", "https://b.example.com"]);
     }
 
     #[test]
     fn parse_nodes_no_matching_region_keeps_api_order() {
         let json = r#"[{"url":"https://a.example.com","region":"JP"},{"url":"https://b.example.com","region":"US"}]"#;
         let nodes = parse_nodes(json, Some("CN"));
-        assert_eq!(
-            nodes,
-            ["https://a.example.com", "https://b.example.com"]
-        );
+        assert_eq!(nodes, ["https://a.example.com", "https://b.example.com"]);
     }
 
     #[tokio::test]
@@ -387,5 +403,90 @@ mod tests {
         let line = head.lines().next().unwrap_or_default();
         assert_eq!(line, "GET /nodes HTTP/1.1");
         assert_eq!(ENDPOINT, "https://nodes.qomicex.top/api/nodes");
+    }
+
+    /// 启动本地 HTTP 服务器：前 `fail_first` 个连接返回 500，之后返回 `ok_body`。
+    /// 用于验证拉取失败重试语义（重试次数以服务器收到的请求计数为准）。
+    async fn start_flaky_server(
+        fail_first: usize,
+        ok_body: &str,
+    ) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+        let ok = http_response("200 OK", ok_body);
+        let fail = http_response("500 Internal Server Error", "");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_loop = seen.clone();
+        tokio::spawn(async move {
+            let mut served = 0usize;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    continue;
+                };
+                let seen = seen_loop.clone();
+                served += 1;
+                let response = if served <= fail_first {
+                    fail.clone()
+                } else {
+                    ok.clone()
+                };
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let Ok(n) = stream.read(&mut chunk).await else {
+                            break;
+                        };
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            seen.lock()
+                                .await
+                                .push(String::from_utf8_lossy(&buf).into_owned());
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (addr, seen)
+    }
+
+    /// 回归（联机拉取抖动）：首次拉取失败应重试一次，第二次成功即采用其结果。
+    #[tokio::test]
+    async fn fetch_retry_once_then_succeed() {
+        let (addr, seen) =
+            start_flaky_server(1, r#"[{"url":"tcp://retry.example.com:11010"}]"#).await;
+        let provider = RelayNodeProvider::new(None, None);
+        let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
+        assert_eq!(nodes, ["tcp://retry.example.com:11010"]);
+        assert_eq!(seen.lock().await.len(), 2, "首次失败后应重试一次");
+    }
+
+    /// 回归：两次尝试均失败 → 回退内置默认节点，且总共只请求 2 次（初试 + 1 次重试）。
+    #[tokio::test]
+    async fn fetch_both_attempts_fail_returns_default_nodes() {
+        let (addr, seen) = start_flaky_server(usize::MAX, "{}").await;
+        let provider = RelayNodeProvider::new(None, None);
+        let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
+        assert_eq!(nodes, default_nodes());
+        assert_eq!(seen.lock().await.len(), 2, "最多尝试 2 次，不无限重试");
+    }
+
+    /// 守护：首次即成功不得发出第二次请求（防止实现成无条件重试）。
+    #[tokio::test]
+    async fn fetch_success_does_not_retry() {
+        let (addr, seen) = start_server(http_response(
+            "200 OK",
+            r#"[{"url":"tcp://ok.example.com:11010"}]"#,
+        ))
+        .await;
+        let provider = RelayNodeProvider::new(None, None);
+        let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
+        assert_eq!(nodes, ["tcp://ok.example.com:11010"]);
+        assert_eq!(seen.lock().await.len(), 1, "首次成功不应重试");
     }
 }
