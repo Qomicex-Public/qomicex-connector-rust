@@ -397,12 +397,15 @@ mod tests {
     async fn fetch_requests_configured_endpoint() {
         let (addr, seen) = start_server(http_response("200 OK", "[]")).await;
         let provider = RelayNodeProvider::new(None, None);
-        let _ = provider.fetch_from(&format!("http://{addr}/nodes")).await;
+        let nodes = provider.fetch_from(&format!("http://{addr}/nodes")).await;
         let lock = seen.lock().await;
         let head = lock.first().expect("应收到请求");
         let line = head.lines().next().unwrap_or_default();
         assert_eq!(line, "GET /nodes HTTP/1.1");
         assert_eq!(ENDPOINT, "https://nodes.qomicex.top/api/nodes");
+        // 合法空数组不得进入重试分支（CodeRabbit nitpick）：恰好 1 次请求。
+        assert_eq!(lock.len(), 1, "合法空数组不应触发重试");
+        assert_eq!(nodes, default_nodes());
     }
 
     /// 启动本地 HTTP 服务器：前 `fail_first` 个连接返回 `fail_response`，之后返回 `ok_body`。
