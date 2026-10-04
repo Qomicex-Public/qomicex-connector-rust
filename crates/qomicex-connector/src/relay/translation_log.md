@@ -25,7 +25,7 @@
 | `DetectSystemRegion()` | `fn detect_system_region()` | `sys_locale::get_locale()` → 取 `-` 后段大写；无 `-` 或失败回退 `"CN"` |
 | `FetchAsync(ct)` | `fetch()` → `fetch_from(ENDPOINT)` | 按约束拆分出可注入的 `fetch_from(&self, url: &str)` |
 | `ResolveHttpNodesAsync` / `ResolveSingleNodeAsync` | `fetch_nodes` / `resolve_http_node` | http(s) 节点二次 GET，返回体 trim 后作为实际节点，失败跳过；跳过节点则记日志 |
-| `ParseNodes(json, preferredRegion)` | `pub fn parse_nodes(&str, Option<&str>) -> Vec<String>` | serde_json 解析；region 大小写不敏感匹配排前，其余保序在后；JSON 非法/非数组返回空 |
+| `ParseNodes(json, preferredRegion)` | `pub fn parse_nodes(&str, Option<&str>) -> Option<Vec<String>>` | serde_json 解析；region 大小写不敏感匹配排前，其余保序在后；JSON 非法/非数组返回 `None`（区别于合法空数组 `Some(空)`，使 fetch 重试语义可区分"响应无效"与"列表为空"） |
 | HTTP 超时 | `reqwest::Client::builder().timeout(Duration::from_secs(10))` | 一致 |
 | 日志 | `log::info!` / `log::warn!` | 文案与 C# 一致（中文） |
 
