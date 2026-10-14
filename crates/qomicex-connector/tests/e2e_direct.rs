@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 端到端集成测试（默认跳过，手动触发）：
 //! 本地三实例（relay + host + guest）直连拓扑，验证 SCF 完整链路：
 //! 开房 → 发现中心 → 协议协商 → player_ping → ping → server_port → 玩家列表 → 清理。

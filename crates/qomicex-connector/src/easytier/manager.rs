@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! EasyTier 管理器（easytier 库版，非进程）。
 //! 对应 C# `EasyTierManager`（进程版）：不再 spawn `easytier-core`，直接在进程内运行网络实例。
 

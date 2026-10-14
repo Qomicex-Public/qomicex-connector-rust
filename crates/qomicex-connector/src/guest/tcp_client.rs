@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 联机中心 TCP 客户端：连接 + 单发单收 + 15s 读超时。
 //!
 //! 对应 C# `Qomicex.Connector/Guest/TcpClient.cs`。

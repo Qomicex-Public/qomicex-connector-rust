@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 协议帧：请求与响应。
 
 /// 协议请求帧。

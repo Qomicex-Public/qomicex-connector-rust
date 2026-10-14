@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 访客端联机客户端（ScaffoldingGuest）。
 //! 对应 C# `Qomicex.Connector/Guest/ScaffoldingGuest.cs`：
 //! 加入 EasyTier 网络 → 发现联机中心 → 直连或端口转发 → 协议协商 → 心跳。

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 内置默认中继节点与节点列表解析工具。
 
 /// 内置默认中继节点。

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 联机中心（ScaffoldingCenter）：管理 TCP 协议服务器、EasyTier 网络与玩家列表。
 //! 对应 C# `Qomicex.Connector/Center/ScaffoldingCenter.cs`。
 //!

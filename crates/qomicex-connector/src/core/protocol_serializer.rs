@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 协议序列化：请求与响应的帧编码 / 解码（字节序为大端）。
 
 use tokio::io::{AsyncRead, AsyncReadExt};

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! EasyTier 集成模块：基于 easytier 库（非进程）的虚拟网络管理。
 //!
 //! 替代 C# 版本中 spawn `easytier-core` 进程的方案，直接在进程内

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 协议处理器层（对应 C# `Protocols/IProtocol.cs`）。
 //!
 //! 提供 [`ProtocolHandler`] trait 与 5 个标准协议

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 联机中心发现：扫描 EasyTier 节点，按主机名约定匹配中心及其端口。
 
 use std::future::Future;

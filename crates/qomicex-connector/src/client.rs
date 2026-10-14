@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 连接器库入口客户端（ScaffoldingClient）。
 //! 对应 C# `Qomicex.Connector/ScaffoldingClient.cs`：
 //! 统一的房间创建 / 加入 / 优雅关闭入口，管理本客户端创建的联机中心与访客端。

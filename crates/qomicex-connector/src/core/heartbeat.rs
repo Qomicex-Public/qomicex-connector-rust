@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 心跳服务：按固定间隔调用回调发送心跳，发送失败或取消时停止。
 
 use std::future::Future;

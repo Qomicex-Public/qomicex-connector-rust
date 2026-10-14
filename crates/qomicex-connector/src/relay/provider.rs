@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 中继节点提供器：从远程节点服务获取中继节点，失败时回退到内置默认节点。
 
 use std::time::Duration;

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 取消令牌：轻量的线程安全取消信号（对应 C# `CancellationToken`）。
 
 use std::sync::{

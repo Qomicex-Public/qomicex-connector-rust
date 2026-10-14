@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Core 层：协议编解码、协议协商、联机中心发现与心跳服务。
 
 pub mod center_discovery;

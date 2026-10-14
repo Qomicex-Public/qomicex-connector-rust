@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Qomicex Launcher Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! 协议协商：取我方与中心端共有的协议列表。
 
 use std::collections::HashSet;
