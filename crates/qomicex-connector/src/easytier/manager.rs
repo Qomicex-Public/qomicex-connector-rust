@@ -208,7 +208,9 @@ impl EasyTierManager {
         let Some(instance) = self.manager.instance(instance_id) else {
             return Err(ScaffoldingError::EasyTierStart("实例不存在".into()));
         };
-        easytier_core::management::apply_config_patch(&instance, patch)
+        // 上游 e8a60e6b 起新增可选的 ConfigPatchPersistence：本仓实例是内存 TomlConfig，
+        // 不需要写回配置文件，传 None 即保持旧行为。
+        easytier_core::management::apply_config_patch(&instance, patch, None)
             .await
             .map_err(|err| {
                 ScaffoldingError::EasyTierStart(format!("动态修改配置失败: {err}"))
